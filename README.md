@@ -22,4 +22,4 @@ The workflow implements both the **unified equation** and a **stochastic model**
 - [RStudio](https://posit.co/) (recommended)  
 - Required R packages:  
   ```r
-  install.packages(c("pracma", "dplyr", "ggplot2", "minpack.lm", "broom"))
+  install.packages(c("pracma", "minpack.lm", "broom", "DEoptim", "parallel", "gamlss.dist"))
