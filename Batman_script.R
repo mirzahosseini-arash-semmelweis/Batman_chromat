@@ -1,16 +1,150 @@
-#TODO
-#check calculation of kue_r
-#check if linreg kue vs t_A is necessary
-#simulate se
-#rescale A and B AUC (?)
+smart_fread <- function(file, encoding) {
+  # Description
+  # Helper function required for reading files in batch.eval functions.
+  
+  # Arguments
+  # file      The .csv file to be read.
+  # encoding  The recognized encoding of the file.
+  
+  # Value
+  # list      The recognized separator and decimal of the file.
+  
+  raw_lines <- readLines(con <- file(file, encoding = encoding), n = 10, warn = FALSE)
+  sep_counts <- sapply(c("," = ",", ";" = ";", "\t" = "\t", "|" = "|"), function(sep) {
+    length(strsplit(raw_lines[1], sep, fixed = TRUE)[[1]]) - 1
+  })
+  guessed_sep <- names(which.max(sep_counts))
+  all_fields <- unlist(strsplit(paste(raw_lines, collapse = guessed_sep), split = guessed_sep, fixed = TRUE))
+  number_like <- grep("^[0-9]+[.,][0-9]+$", all_fields, value = TRUE)
+  dot_count <- sum(grepl("\\.", number_like))
+  comma_count <- sum(grepl(",", number_like))
+  guessed_dec <- if (comma_count > dot_count) "," else "."
+  list(sep = guessed_sep, dec = guessed_dec)
+}
 
-#fit function for batch analysis
-fit.batch.kue <- function(data, t0 = "run", threshold = 0.3, minSNR = 50, minpeakdist = 5,
+plot.runs <- function(path) {
+  # Description
+  # This function plots all chromatograms into new subdirectory as .png files.
+  
+  # Arguments
+  # path      The path where files are found.
+  
+  # Value
+  # plots     Folder is created in path with plots of chromatograms.
+  
+  # load required packages
+  require(stringr)
+  require(tools)
+  require(readr)
+  require(ggplot2)
+  require(fs)
+  require(data.table)
+  
+  # reading files
+  setwd(path)
+  csv_files <- list.files(pattern = "(?i)\\.csv$", full.names = TRUE)
+  csv_files <- csv_files[!tolower(basename(csv_files)) %in% c("summary_data.csv", "peak_table.csv")]
+  if (length(csv_files) == 0) {stop("No .csv files found in path directory.")}
+  
+  # creating output initialization
+  output_dir <- "plots"
+  dir_create(output_dir)
+  
+  # evaluating files
+  for (file in csv_files) {
+    base_name <- tools::file_path_sans_ext(basename(file))
+    base_name_parts <- str_split(base_name, "_", simplify = TRUE)[1:4]
+    comp_name <- base_name_parts[1]
+    col_name <- base_name_parts[2]
+    flow <- as.numeric(str_replace(base_name_parts[3], "^(\\d)(\\d+)$", "\\1.\\2"))
+    temp <- as.numeric(base_name_parts[4])
+    title <- paste(paste(comp_name, col_name, flow, temp, sep = ", "), "(comp, col, flow mL/min, °C)")
+    encoding <- readr::guess_encoding(file)$encoding
+    sep <- smart_fread(file, encoding = encoding)$sep
+    dec <- smart_fread(file, encoding = encoding)$dec
+    df <- read.csv(file, header = FALSE, sep = sep, dec = dec, fileEncoding = encoding)
+    if (!is.numeric(df[, 1])) {
+      df <- read.csv(file, header = TRUE, sep = sep, dec = dec, fileEncoding = encoding)
+    }
+    
+    data <- data.frame(df[, 1:2])
+    colnames(data) <- c("t", "A")
+    
+    plot <- ggplot(data = data) +
+      geom_line(aes(x = t, y = A)) +
+      labs(title = title, x = "Time (min)", y = "Intensity") +
+      scale_x_continuous(breaks = seq(round(min(data$t), 0), round(max(data$t), 0), by = 1),
+                         guide = guide_axis(check.overlap = TRUE)) +
+      theme_bw()
+    out_file <- file.path(output_dir, paste0(base_name, ".png"))
+    ggsave(out_file, plot = plot, width = 6, height = 4, dpi = 300)
+  }
+}
+
+fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
+                          peak_table = FALSE, file, t0_given = FALSE,
                           enantio = TRUE, microrev = TRUE, A0 = 0.5) {
+  # Description
+  # Helper function to fit chromatography interconversion kinetic constant from
+  # unified equation using a two-step iterative minimization.
+  
+  # Arguments
+  # data        A data frame, data table or matrix with at least 2 columns, in
+  #             which the first contains numeric indicating time, the second
+  #             column indicating measured chromatography signal. All other
+  #             columns will be disregarded.
+  # threshold   The minimum peak threshold passed to the `pracma::findpeaks` algorithm.
+  #             Default is 0.3. Adjust lower value for noisier or broader peaks.
+  # minSNR      The minimum SNR a peak must have to be included as peak. The
+  #             baseline standard deviation is estimated from the beginning and
+  #             portions of the chromatogram. Default value is 10. Adjust value
+  #             noisier chromatograms.
+  #             Default is 50.
+  # minpeakdist The minimum peak distance enforced, expressed as percentage point
+  #             of total run time. Default is 1%. Warning, during the algorithm
+  #             closer than `minpeakdistance` peaks will be excluded from lowest
+  #             intensity first.
+  # peak_table  Logical, indicating whether the retention times of the dead peak
+  #             and two Batman peaks are given in a guide. This guide must be in
+  #             the same path named "peak_table.csv" and must contain the following
+  #             columns: file_name, t_M, t_A, t_B. The file_name must be the vector
+  #             of file names as appearing in the output "summary_data.csv".
+  #             The t_M, t_A, t_B vectors contain retention time estimates where
+  #             the algorithm will search for the peaks. If t_A, t_B values are
+  #             empty in the "peak_table.csv" file (because of coalesced peaks),
+  #             the algorithm will skip unified equation calculation for that
+  #             chromatogram. Providing t_M for these coalesced peaks is still
+  #             advised, since accurate dead peak identification is required for
+  #             stochastic modeling. Default is FALSE.
+  # file        The file of the chromatogram being processed. Passed on from the
+  #             batch.eval.kue() function.
+  # t0_given    Logical, indicating whether dead peaks are included in the chromatograms.
+  #             If TRUE, the algorithm will not look for dead peaks and take t_M
+  #             values in "peak_table.csv" as given. Default is FALSE.
+  # enantio     Logical, indicating whether enantiomerization occurs during
+  #             interconversion, in which case equlibrium constant is fixed as 1.
+  #             If FALSE, general isomerization is assumed and equilibrium constant
+  #             is estimated from the two peak areas (cut in the middle). Default
+  #             is TRUE.
+  # microrev    Logical, indicating whether the principle of microscopic reversibility
+  #             applies. Default is TRUE.
+  # A0          Fraction of the first eluted isomer in the injected sample.
+  #             Default is 0.5.
+  
+  # Value
+  # result      The fitted peak picking parameters and kinetic constants (kue_f and
+  #             kue_r for the forward and reverse direction) are returned.
+  
+  # References
+  # Trapp, O. (2006) Unified Equation for Access to Rate Constants of First-Order
+  # Reactions in Dynamic and On-Column Reaction Chromatography. Anal. Chem. 78, 189-198.
+  
+  # load required packages
   require(pracma)
   require(dplyr)
   require(stringr)
-  #error handling
+  
+  # error handling
   if (missing(data)) stop("No data provided.")
   if (!is.numeric(threshold)) stop("Argument 'threshold' must be numeric.")
   if (!is.numeric(minSNR)) stop("Argument 'minSNR' must be numeric.")
@@ -19,15 +153,26 @@ fit.batch.kue <- function(data, t0 = "run", threshold = 0.3, minSNR = 50, minpea
   if (!is.logical(microrev)) stop("Argument 'microrev' must be boolean")
   if (!is.numeric(A0)) stop("Argument 'A0' must be numeric.")
   if (A0 > 1 | A0 < 0) stop("Argument 'A0' must be between 0 and 1.")
-  #peak find
+  if (peak_table == FALSE & t0_given == TRUE) stop("Peak table must be provided to fetch t0 values.")
+  
+  # use first 2 columns of dataframe
   data <- data.frame(data[, 1:2])
   colnames(data) <- c("t", "A")
-  baseline_sample <- data[1:(0.02*nrow(data)), ]
+  
+  # baseline correction
+  all_peaks <- findpeaks(data$A, threshold = 0.3) # find all peaks (rough estimate)
+  first_peak_start <- min(min(all_peaks[, 3]), 0.02*nrow(data))
+  if (first_peak_start == 1) {message("Peak found at first time point; baseline might be unreliable.")}
+  last_peak_ends <- max(max(all_peaks[, 4]), 0.98*nrow(data))
+  if (last_peak_ends == nrow(data)) {message("Peak found at last time point; baseline might be unreliable.")}
+  baseline_sample <- data[c(1:first_peak_start, last_peak_ends:nrow(data)), ]
   baseline_sd <- sd(baseline_sample$A)
-  baseline <- data[abs(data$A) < 12*baseline_sd, ]
-  base_corr_coef <- summary(lm(A ~ t, baseline))$coef
-  base_corr <- data$t*base_corr_coef[2, 1] + base_corr_coef[1, 1]
-  data$A <- data$A - base_corr
+  baseline <- data[abs(data$A - mean(baseline_sample$A)) < 3*baseline_sd, ]
+  fit <- lm(A ~ poly(t, 3, raw = TRUE), data = baseline)
+  baseline_pred <- predict(fit, newdata = data, type = "response")
+  data$A <- data$A - baseline_pred
+  
+  # peak find
   peaks <- findpeaks(data$A,
                      threshold = threshold,
                      minpeakheight = minSNR*baseline_sd,
@@ -38,77 +183,105 @@ fit.batch.kue <- function(data, t0 = "run", threshold = 0.3, minSNR = 50, minpea
   }
   colnames(peaks) <- c("A", "ti", "ti_start", "ti_end")
   peaks <- peaks %>% arrange(ti)
-  t0peak <- peaks[1, ]
-  peaks <- peaks[-1, ]
-  if (is.numeric(t0)) {
-    if (abs(data$t[t0peak$ti] - t0) > 1) {
-      warning("Warning: Identified dead time farther than 1 min from provided t0; using provided value. \n")
-      peaks <- rbind(t0peak, peaks)
-      t_M <- t0
-    } else {
-      t_M <- data$t[t0peak$ti]
+  peaks$t <- data$t[peaks$ti]
+  # find peaks on chromatogram
+  if (!peak_table) {
+    t0peak <- peaks[1, ]
+    t_M <- t0peak$t
+    peaks <- peaks[-1, ]
+    npeaks <- nrow(peaks)
+    if (npeaks == 0) {
+      stop("No peaks found other than dead time.")
     }
-  }
-  if (t0 == "run") {
-    t_M <- data$t[t0peak$ti]
-  } else {stop("Possible values for t0 are numeric or 'run'.")}
-  npeaks <- nrow(peaks)
-  if (npeaks == 0) {
-    stop("Something went wrong during peak picking. No peaks found other than dead time.")
-  }
-  if (npeaks == 1) {
-    stop("Only one peak found; perform stochastic modeling.")
-  }
-  if (npeaks > 2) {
+    if (npeaks == 1) {
+      stop("Only one peak found; perform stochastic modeling.")
+    }
     peaks <- peaks %>% filter(row_number() %in% c(1, n()))
-    warning("More than 2 peaks found; peaks at extrema are kept. \n")
   }
-  npeaks <- nrow(peaks)
-  if (npeaks == 2) {
-    t_Ai <- peaks[1, 2]
-    t_Bi <- peaks[2, 2]
-    t_A <- data$t[t_Ai]
-    t_B <- data$t[t_Bi]
-    t_As <- t_A*60
-    t_Bs <- t_B*60
-    h_A <- peaks[1, 1]
-    h_B <- peaks[2, 1]
-    h_mid <- data$A[mean(c(t_Ai, t_Bi))]
-    if (h_A >= h_B) {
-      h_p <- 100*h_mid/h_A
+  # find peaks based on peak_table
+  if (peak_table) {
+    peak_tab <- read.csv("peak_table.csv", header = TRUE, sep = ",", dec = ".")
+    peak_values <- peak_tab %>% filter(file_name == basename(file))
+    if (anyNA(peak_values)) {stop("Peak values not given (completely) in peak_tab.")}
+    # either t0 is given or needs to be found
+    if (t0_given) {
+      if (nrow(peaks) < 2) {stop("Not enough peaks found; perform stochastic modeling.")}
+      t_M <- peak_values$t_M
+      idx <- c(
+        which.min(abs(peaks$t - peak_values$t_A)),
+        which.min(abs(peaks$t - peak_values$t_B))
+      )
+      peaks <- peaks[idx,]
+      t0peak <- data.frame(A = NA, ti = NA, ti_start = NA, ti_end = NA, t = NA)
     } else {
-      h_p <- 100*h_mid/h_B
+      if (nrow(peaks) < 3) {stop("Not enough peaks found; perform stochastic modeling.")}
+      t0peak <- peaks %>% slice_min(abs(peaks$t - peak_values$t_M), n = 1, with_ties = FALSE)
+      t_M <- t0peak$t
+      idx <- c(
+        which.min(abs(peaks$t - peak_values$t_A)),
+        which.min(abs(peaks$t - peak_values$t_B))
+      )
+      peaks <- peaks[idx,]
     }
-    w_A.i <- which.min(abs(data$A[peaks[1, 3]:t_Ai] - h_A/2)) + peaks[1, 3] - 1
-    w_A.i2 <- which.min(abs(data$A[t_Ai:peaks[1, 4]] - h_A/2)) + t_Ai - 1
-    w_A <- ifelse(h_mid >= h_A/2, 2*abs(data$t[w_A.i] - t_A), data$t[w_A.i2] - data$t[w_A.i])
-    w_As <- w_A*60
-    w_A.1 <- data$t[w_A.i]
-    w_A.2 <- ifelse(h_mid >= h_A/2, w_A + w_A.1, data$t[w_A.i2])
-    w_B.i <- which.min(abs(data$A[peaks[2, 3]:t_Bi] - h_B/2)) + peaks[2, 3] - 1
-    w_B.i2 <- which.min(abs(data$A[t_Bi:peaks[2, 4]] - h_B/2)) + t_Bi - 1
-    w_B <- ifelse(h_mid >= h_B/2, 2*abs(data$t[w_B.i2] - t_B), data$t[w_B.i2] - data$t[w_B.i])
-    w_Bs <- w_B*60
-    w_B.1 <- data$t[w_B.i]
-    w_B.2 <- ifelse(h_mid >= h_B/2, w_B + w_B.1, data$t[w_B.i2])
-    s_As <- w_As/sqrt(8*log(2))
-    s_Bs <- w_Bs/sqrt(8*log(2))
-    A_spl <- spline(x = data$t[peaks[1, 3]:mean(c(t_Ai, t_Bi))],
-                    y = data$A[peaks[1, 3]:mean(c(t_Ai, t_Bi))],
-                    n = 2000)
-    A <- sum(A_spl$y)
-    B_spl <- spline(x = data$t[mean(c(t_Ai, t_Bi)):peaks[2, 4]],
-                    y = data$A[mean(c(t_Ai, t_Bi)):peaks[2, 4]],
-                    n = 2000)
-    B <- sum(B_spl$y)
-    K <- A/B
-    N <- mean(5.54*(c(t_A, t_B)/c(w_A, w_B))^2)
-  } else {stop("Something went wrong during peak picking.")}
-  if (enantio == TRUE) {K <- 1}
-  if (microrev == TRUE) {
+  }
+  
+  # evaluate chromatographic parameters
+  if (!anyNA(t0peak)) {
+    t_Mi <- t0peak$ti
+    h_M <- t0peak$A
+    w_M.i <- which.min(abs(data$A[t0peak[1, 3]:t_Mi] - h_M/2)) + t0peak[1, 3] - 1
+    w_M.i2 <- which.min(abs(data$A[t_Mi:t0peak[1, 4]] - h_M/2)) + t_Mi - 1
+    w_M <- data$t[w_M.i2] - data$t[w_M.i]
+    s_M <- w_M/sqrt(8*log(2))
+  } else {
+    s_M <- NA
+  }
+  t_Ai <- peaks[1, 2]
+  t_Bi <- peaks[2, 2]
+  t_A <- data$t[t_Ai]
+  t_B <- data$t[t_Bi]
+  t_As <- t_A*60
+  t_Bs <- t_B*60
+  h_A <- peaks[1, 1]
+  h_B <- peaks[2, 1]
+  h_mid <- data$A[mean(c(t_Ai, t_Bi))]
+  if (h_A >= h_B) {
+    h_p <- 100*h_mid/h_A
+  } else {
+    h_p <- 100*h_mid/h_B
+  }
+  w_A.i <- which.min(abs(data$A[peaks[1, 3]:t_Ai] - h_A/2)) + peaks[1, 3] - 1
+  w_A.i2 <- which.min(abs(data$A[t_Ai:peaks[1, 4]] - h_A/2)) + t_Ai - 1
+  w_A <- ifelse(h_mid >= h_A/2, 2*abs(data$t[w_A.i] - t_A), data$t[w_A.i2] - data$t[w_A.i])
+  w_As <- w_A*60
+  w_A.1 <- data$t[w_A.i]
+  w_A.2 <- ifelse(h_mid >= h_A/2, w_A + w_A.1, data$t[w_A.i2])
+  w_B.i <- which.min(abs(data$A[peaks[2, 3]:t_Bi] - h_B/2)) + peaks[2, 3] - 1
+  w_B.i2 <- which.min(abs(data$A[t_Bi:peaks[2, 4]] - h_B/2)) + t_Bi - 1
+  w_B <- ifelse(h_mid >= h_B/2, 2*abs(data$t[w_B.i2] - t_B), data$t[w_B.i2] - data$t[w_B.i])
+  w_Bs <- w_B*60
+  w_B.1 <- data$t[w_B.i]
+  w_B.2 <- ifelse(h_mid >= h_B/2, w_B + w_B.1, data$t[w_B.i2])
+  s_As <- w_As/sqrt(8*log(2))
+  s_Bs <- w_Bs/sqrt(8*log(2))
+  A_spl <- spline(x = data$t[peaks[1, 3]:mean(c(t_Ai, t_Bi))],
+                  y = data$A[peaks[1, 3]:mean(c(t_Ai, t_Bi))],
+                  n = 2000)
+  A <- sum(A_spl$y)
+  B_spl <- spline(x = data$t[mean(c(t_Ai, t_Bi)):peaks[2, 4]],
+                  y = data$A[mean(c(t_Ai, t_Bi)):peaks[2, 4]],
+                  n = 2000)
+  B <- sum(B_spl$y)
+  K <- A/B
+  N <- mean(5.54*(c(t_A, t_B)/c(w_A, w_B))^2)
+  
+  # override equilibrium constant if necessary and apply microscopic reversibility
+  if (enantio) {K <- 1}
+  if (microrev) {
     t_xs <- t_As
   } else {t_xs <- t_Bs}
-  #calculate kue
+  
+  # calculate kue
   calc.kue1 <- function(k, K, t_As, t_Bs, t_xs, s_As, s_Bs, N, h_p, A0) {
     -(1/t_As)*(
       log(
@@ -167,6 +340,7 @@ fit.batch.kue <- function(data, t0 = "run", threshold = 0.3, minSNR = 50, minpea
   }
   root.i <- which.min(abs(k - f_k))
   root <- k[root.i]
+  if (length(root) == 0) {stop("Unified equation did not result in finite value.")}
   k <- seq(from = root/2, to = root*2, length = 100)
   if (h_A >= h_B) {
     f_k <- calc.kue1(k, K, t_As, t_Bs, t_xs, s_As, s_Bs, N, h_p, A0)
@@ -178,8 +352,10 @@ fit.batch.kue <- function(data, t0 = "run", threshold = 0.3, minSNR = 50, minpea
   if (t_xs == t_As) {
     kue_r <- kue_f*K*t_As/t_Bs
   } else {kue_r <- kue_f*K}
-  #export results
+  
+  # export results
   result <- list(t_M = t_M,
+                 s_M = s_M,
                  t_Ai = t_Ai,
                  t_Bi = t_Bi,
                  t_A = t_A,
@@ -214,23 +390,31 @@ fit.batch.kue <- function(data, t0 = "run", threshold = 0.3, minSNR = 50, minpea
   return(result)
 }
 
-#function required for reading files
-smart_fread <- function(file, encoding) {
-  raw_lines <- readLines(con <- file(file, encoding = encoding), n = 10, warn = FALSE)
-  sep_counts <- sapply(c("," = ",", ";" = ";", "\t" = "\t", "|" = "|"), function(sep) {
-    length(strsplit(raw_lines[1], sep, fixed = TRUE)[[1]]) - 1
-  })
-  guessed_sep <- names(which.max(sep_counts))
-  all_fields <- unlist(strsplit(paste(raw_lines, collapse = guessed_sep), split = guessed_sep, fixed = TRUE))
-  number_like <- grep("^[0-9]+[.,][0-9]+$", all_fields, value = TRUE)
-  dot_count <- sum(grepl("\\.", number_like))
-  comma_count <- sum(grepl(",", number_like))
-  guessed_dec <- if (comma_count > dot_count) "," else "."
-  list(sep = guessed_sep, dec = guessed_dec)
-}
-
-batch.eval.kue <- function(path, t0 = "run", threshold = 0.3, minSNR = 50, minpeakdist = 5,
+batch.eval.kue <- function(path, threshold = 0.3, minSNR = 10, minpeakdist = 1,
+                           peak_table = FALSE, t0_given = FALSE,
                            enantio = TRUE, microrev = TRUE, A0 = 0.5) {
+  # Description
+  # This function performs batch evaluation of the unified equation on chromatography
+  # files provided in .csv format. It uses the algorithm of fit.batch.kue().
+  
+  # Arguments
+  # path  The path where files are found.
+  # All other arguments have the same defaults and are passed to fit.batch.kue().
+  
+  # Value
+  # The function call generates a new folder in the path and saves the chromatography
+  # plots as .png files. A summary_log.txt is generated in the path with Success/Error
+  # status and error messages. A summary_data.csv is also generated in the path
+  # with fitted peak parameters, kinetic constants and calculated thermodynamic parameters.
+  
+  # References
+  # Trapp, O. (2006) Unified Equation for Access to Rate Constants of First-Order
+  # Reactions in Dynamic and On-Column Reaction Chromatography. Anal. Chem. 78, 189-198.
+  #
+  # Trapp, O. (2008) A novel software tool for high throughput measurements of
+  # interconversion barriers: DCXplorer. Journal of Chromatography B, 875, 42-47.
+  
+  # load required packages
   require(fs)
   require(readr)
   require(data.table)
@@ -240,25 +424,31 @@ batch.eval.kue <- function(path, t0 = "run", threshold = 0.3, minSNR = 50, minpe
   require(dplyr)
   require(broom)
   
-  #reading files
+  # reading files
   setwd(path)
   csv_files <- list.files(pattern = "(?i)\\.csv$", full.names = TRUE)
-  csv_files <- csv_files[!tolower(basename(csv_files)) %in% "summary_data.csv"]
+  csv_files <- csv_files[!tolower(basename(csv_files)) %in% c("summary_data.csv", "peak_table.csv")]
   if (length(csv_files) == 0) {stop("No .csv files found in path directory.")}
+  
+  # creating output initialization
   output_dir <- "plots_kue"
   dir_create(output_dir)
   log_entries <- list()
   summary_rows <- list()
+  
+  # evaluating files
   for (file in csv_files) {
+    if (t0_given) {
+      peak_tab <- read.csv("peak_table.csv", header = TRUE, sep = ",", dec = ".")
+      peak_values <- peak_tab %>% filter(file_name == basename(file))
+    }
     base_name <- tools::file_path_sans_ext(basename(file))
-    base_name_parts <- str_split(base_name, "_", simplify = TRUE)
+    base_name_parts <- str_split(base_name, "_", simplify = TRUE)[1:4]
     comp_name <- base_name_parts[1]
     col_name <- base_name_parts[2]
     flow <- as.numeric(str_replace(base_name_parts[3], "^(\\d)(\\d+)$", "\\1.\\2"))
-    Temp <- str_extract(base_name, "\\d+$") |> as.numeric() + 273.15
-    title <- str_replace_all(base_name, "_", ", ")
-    title <- str_replace(title, "(\\b)(\\d)(\\d+)(,\\s*\\d+\\s*$)", "\\2.\\3\\4")
-    title <- paste(title, "(comp, col, flow ml/min, °C)")
+    Temp <- as.numeric(base_name_parts[4]) + 273.15
+    title <- paste(paste(comp_name, col_name, flow, Temp - 273.15, sep = ", "), "(comp, col, flow mL/min, °C)")
     summary_row <- data.frame(file = basename(file),
                               comp_name = comp_name,
                               col_name = col_name,
@@ -277,15 +467,17 @@ batch.eval.kue <- function(path, t0 = "run", threshold = 0.3, minSNR = 50, minpe
       if (!is.numeric(df[, 1])) {
         df <- read.csv(file, header = TRUE, sep = sep, dec = dec, fileEncoding = encoding)
       }
-      #table
-      result <- fit.batch.kue(data = df, t0, threshold, minSNR, minpeakdist,
+      # result table
+      result <- fit.batch.kue(data = df, threshold, minSNR, minpeakdist,
+                              peak_table, file, t0_given,
                               enantio, microrev, A0)
-      Gue_f <- -log(result$kue_f/(1.380662e-23*Temp/6.626176e-34))*8.31441*Temp/1000
-      Gue_r <- -log(result$kue_r/(1.380662e-23*Temp/6.626176e-34))*8.31441*Temp/1000
+      Gue_f <- -log(result$kue_f/(1.380662e-23*Temp*0.5/6.626176e-34))*8.31441*Temp
+      Gue_r <- -log(result$kue_r/(1.380662e-23*Temp*0.5/6.626176e-34))*8.31441*Temp
       result$Gue_f <- Gue_f
       result$Gue_r <- Gue_r
       table <- data.frame(result)
       table <- table %>% select(t_M,
+                                s_M,
                                 t_A,
                                 t_B,
                                 h_A,
@@ -305,12 +497,12 @@ batch.eval.kue <- function(path, t0 = "run", threshold = 0.3, minSNR = 50, minpe
         summary_row,
         table
       )
-      #plot
+      # chromatography plot
       h_max <- max(result$h_A, result$h_B)
       t_max <- result$t_B
       plot <- ggplot(data = df) +
         geom_line(aes(x = V1, y = V2)) +
-        labs(title = title, x = "time [min]", y = "intensity") +
+        labs(title = title, x = "Time (min)", y = "Intensity") +
         annotate("segment", x = result$t_A, y = result$h_A - 0.05*h_max,
                  xend = result$t_A, yend = result$h_A + 0.05*h_max,
                  col = "red3") +
@@ -350,7 +542,8 @@ batch.eval.kue <- function(path, t0 = "run", threshold = 0.3, minSNR = 50, minpe
       log_entry$kue_error <<- conditionMessage(e)
       summary_row <<- cbind(summary_row,
                             data.frame(
-                              t_M = NA,
+                              t_M = ifelse(t0_given, peak_values$t_M, NA),
+                              s_M = NA,
                               t_A = NA,
                               t_B = NA,
                               h_A = NA,
@@ -371,84 +564,99 @@ batch.eval.kue <- function(path, t0 = "run", threshold = 0.3, minSNR = 50, minpe
     summary_rows[[length(summary_rows) + 1]] <- summary_row
     log_entries[[length(log_entries) + 1]] <- log_entry
   }
-  #create log file and table
+  
+  # create log and summary files
   log_df <- rbindlist(log_entries, fill = TRUE)
   summary_df <- rbindlist(summary_rows, fill = TRUE)
-  #add linreg kue ~ t_A
+  
+  #add linreg Eyring-Polanyi
   summary_df <- summary_df %>%
-    group_by(comp_name, col_name, Temp) %>%
+    group_by(comp_name, col_name) %>%
     group_modify(~ {
-      valid_data <- .x %>% filter(!is.na(kue_f) & !is.na(kue_r) & !is.na(t_A))
-      f_intercept <- NA_real_
-      f_slope <- NA_real_
-      f_intercept_se <- NA_real_
-      f_slope_se <- NA_real_
-      f_r2 <- NA_real_
-      r_intercept <- NA_real_
-      r_slope <- NA_real_
-      r_intercept_se <- NA_real_
-      r_slope_se <- NA_real_
-      r_r2 <- NA_real_
+      valid_data <- .x %>% filter(!is.na(kue_f) & !is.na(Temp)) %>%
+        group_by(Temp) %>%
+        summarise(mean_kue_f = mean(kue_f, na.rm = TRUE),
+                  mean_kue_r = mean(kue_r, na.rm = TRUE),
+                  .groups = "drop")
+      EP_f_intercept <- NA_real_
+      EP_f_slope <- NA_real_
+      EP_f_intercept_se <- NA_real_
+      EP_f_slope_se <- NA_real_
+      EP_f_r2 <- NA_real_
+      EP_r_intercept <- NA_real_
+      EP_r_slope <- NA_real_
+      EP_r_intercept_se <- NA_real_
+      EP_r_slope_se <- NA_real_
+      EP_r_r2 <- NA_real_
       if (nrow(valid_data) >= 2) {
-        f_model <- lm(kue_f ~ I(60*t_A), data = valid_data)
-        f_tidy_model <- tidy(f_model)
-        f_glance_model <- glance(f_model)
-        f_intercept <- f_tidy_model$estimate[f_tidy_model$term == "(Intercept)"]
-        f_slope <- f_tidy_model$estimate[f_tidy_model$term == "I(60 * t_A)"]
-        f_intercept_se <- f_tidy_model$std.error[f_tidy_model$term == "(Intercept)"]
-        f_slope_se <- f_tidy_model$std.error[f_tidy_model$term == "I(60 * t_A)"]
-        f_r2 <- f_glance_model$r.squared
-        r_model <- lm(kue_r ~ I(60*t_A), data = valid_data)
-        r_tidy_model <- tidy(r_model)
-        r_glance_model <- glance(r_model)
-        r_intercept <- r_tidy_model$estimate[r_tidy_model$term == "(Intercept)"]
-        r_slope <- r_tidy_model$estimate[r_tidy_model$term == "I(60 * t_A)"]
-        r_intercept_se <- r_tidy_model$std.error[r_tidy_model$term == "(Intercept)"]
-        r_slope_se <- r_tidy_model$std.error[r_tidy_model$term == "I(60 * t_A)"]
-        r_r2 <- r_glance_model$r.squared
+        EP_f_model <- lm(I(log(mean_kue_f/Temp)) ~ I(1/Temp), data = valid_data)
+        EP_f_tidy_model <- tidy(EP_f_model)
+        EP_f_glance_model <- glance(EP_f_model)
+        EP_f_intercept <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "(Intercept)"]
+        EP_f_slope <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "I(1/Temp)"]
+        EP_f_intercept_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "(Intercept)"]
+        EP_f_slope_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "I(1/Temp)"]
+        EP_f_r2 <- EP_f_glance_model$r.squared
+        EP_r_model <- lm(I(log(mean_kue_r/Temp)) ~ I(1/Temp), data = valid_data)
+        EP_r_tidy_model <- tidy(EP_r_model)
+        EP_r_glance_model <- glance(EP_r_model)
+        EP_r_intercept <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "(Intercept)"]
+        EP_r_slope <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "I(1/Temp)"]
+        EP_r_intercept_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "(Intercept)"]
+        EP_r_slope_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "I(1/Temp)"]
+        EP_r_r2 <- EP_r_glance_model$r.squared
       }
       .x %>%
-        mutate(kue_f_tA = f_slope,
-               kue_f_tA_se = f_slope_se,
-               kue_f_tA_intcpt = f_intercept,
-               kue_f_tA_intcpt_se = f_intercept_se,
-               kue_f_tA_r2 = f_r2,
-               kue_r_tA = r_slope,
-               kue_r_tA_se = r_slope_se,
-               kue_r_tA_intcpt = r_intercept,
-               kue_r_tA_intcpt_se = r_intercept_se,
-               kue_r_tA_r2 = r_r2)
+        mutate(dHue_f = -EP_f_slope*8.314,
+               dHue_f_se = EP_f_slope_se*8.314,
+               dSue_f = (EP_f_intercept - log(2.084e10))*8.314,
+               dSue_f_se = EP_f_intercept_se*8.314,
+               EPue_f_r2 = EP_f_r2,
+               dHue_r = -EP_r_slope*8.314,
+               dHue_r_se = EP_r_slope_se*8.314,
+               dSue_r = (EP_r_intercept - log(2.084e10))*8.314,
+               dSue_r_se = EP_r_intercept_se*8.314,
+               EPue_r_r2 = EP_r_r2)
     }) %>%
     ungroup()
+  
+  # export log and summary files
   fwrite(log_df, "summary_log.txt", sep = "\t", na = "")
   fwrite(summary_df, "summary_data.csv", sep = ",", dec = ".")
   message("Processing complete.")
 }
 
-batch.update.kue <- function(path, drop = "") {
-  require(data.table)
-  summary_df <- fread("summary_data.csv")
-  log_df <- fread("summary_log.txt", na.strings = "")
-  #drop kue data of rows in which "file" is in drop = c("filename")
-  files_to_drop <- drop
-  cols_to_drop <- c("t_M", "t_A", "t_B", "h_A", "h_B", "h_p", "w_A", "w_B",
-                    "A", "B", "K", "N", "kue_f", "kue_r", "Gue_f", "Gue_r",
-                    "kue_f_tA", "kue_f_tA_se", "kue_f_tA_intcpt", "kue_f_tA_intcpt_se",
-                    "kue_f_tA_r2", "kue_r_tA", "kue_r_tA_se", "kue_r_tA_intcpt",
-                    "kue_r_tA_intcpt_se", "kue_r_tA_r2")
-  for (file_drop in files_to_drop) {
-    summary_df[summary_df$file == file_drop, c(cols_to_drop)] <- NA
-    log_df[log_df$file == file_drop, "kue_status"] <- "Dropped"
-    log_df[log_df$file == file_drop, "kue_error"] <- NA
-  }
-  fwrite(log_df, "summary_log.txt", sep = "\t", na = "")
-  fwrite(summary_df, "summary_data.csv", sep = ",", dec = ".")
-  message("Update complete.")
-}
-
 Batman <- function(np, t_run, n_A, n_B, tau_A, tau_B, a, b, alpha) {
+  # Description
+  # Helper function to simulate Batman peaks given a set of chromatography and
+  # interconversion parameters.
+  
+  # Arguments
+  # np            Number of data points to generate.
+  # t_run         Total run time in minutes.
+  # n_A, n_B      Average number of the adsorption–desorption steps for the two peaks.
+  # tau_A, tau_B  Sojourn times for the two peaks.
+  # a, b          Number of forward and reverse direction interconversions during the run.
+  # alpha         Fraction of the first eluted isomer in the injected sample.
+  
+  # Value
+  # result        List of peak data frames (run time, peak signals before and after convolution),
+  #               and state probabilities.
+  
+  # References
+  # Felinger, A. (2008) Molecular dynamic theories in chromatography. Journal of
+  # Chromatography A, 1184, 20-41.
+  #
+  # Sepsey, A., Németh, D. R., Németh, G., Felinger, A. (2018) Rate constant determination of 
+  # interconverting enantiomers by chiral chromatography using a stochastic model.
+  # Journal of Chromatography A, 1564, 155-162.
+  
+  # load required packages
   require(pracma)
-  np <- np - 1 #ensures number of points is np
+  
+  np <- np - 1 # ensures number of points in exported data is np
+  
+  # ensure peak A elutes first
   peakA <- n_A*tau_A
   peakB <- n_B*tau_B
   if (peakA <= peakB) {
@@ -466,19 +674,28 @@ Batman <- function(np, t_run, n_A, n_B, tau_A, tau_B, a, b, alpha) {
   n_B <- n2
   tau_A <- tau1
   tau_B <- tau2
+  
   beta <- 1 - alpha
+  
+  # initialize range of characteristic function
   omega_max <- np*pi/t_run
   domega <- 2*omega_max/np
   omega <- seq(from = -omega_max, to = omega_max, by = domega)
+  
+  # calculate characteristic function of peaks and inverse Fourier transform
   CF_A <- exp(n_A*(1/(1 - 1i*tau_A*omega) - 1))
   CF_B <- exp(n_B*(1/(1 - 1i*tau_B*omega) - 1))
   f_A <- rev(Mod(ifft(CF_A)))
   f_B <- rev(Mod(ifft(CF_B)))
-  t <- (1:(np + 1))*(pi/omega_max)
+  t <- (1:(np + 1))*(pi/omega_max) # ensures time domain is correct
   f <- alpha*f_A + beta*f_B
+  
+  # fetch peak parameters
   tA.i <- which.max(f_A)
   tB.i <- which.max(f_B)
   tA_B.i <- sort(c(tA.i:tB.i))
+  
+  # calculate probability distributions of two states
   x <- seq(from = 1, to = 0, length = length(tA_B.i))
   P_AA <- sqrt(a*b*(1 - x)/x)*
     exp(-a*(1 - x) - b*x)*
@@ -502,24 +719,55 @@ Batman <- function(np, t_run, n_A, n_B, tau_A, tau_B, a, b, alpha) {
   P_B <- c(rep(0, tA.i - 1), P_B, rep(0, np - tB.i + 1))
   P_A[is.nan(P_A)] <- 0
   P_B[is.nan(P_B)] <- 0
+  
+  # convolution of peaks with state probabilities
   f_A_conv <- convolve(f_A, rev(P_A), type = "o")[tA.i:(tA.i + np)]
   f_B_conv <- convolve(f_B, rev(P_B), type = "o")[tB.i:(tB.i + np)]
   f_conv <- f_A_conv + f_B_conv
+  
+  # return result
   return(list(t = t, f_A = f_A, f_B = f_B, f = f,
               f_A_conv = f_A_conv, f_B_conv = f_B_conv, f_conv = f_conv,
               P_A = P_A, P_B = P_B))
 }
 
 preproc.Batman1 <- function(data, summary_df, i) {
-  colnames(data) <- c("t", "f")
-  baseline_sample <- data[1:(0.02*nrow(data)), ]
-  baseline_sd <- sd(baseline_sample$f)
-  baseline <- data[abs(data$f) < 12*baseline_sd, ]
-  base_corr_coef <- summary(lm(f ~ t, baseline))$coef
-  base_corr <- data$t*base_corr_coef[2, 1] + base_corr_coef[1, 1]
-  data$f <- data$f - base_corr
+  # Description
+  # Helper function to preprocess chromatography data for batch.eval.stoch().
+  # Used for data sets that were successfully evaluated with unified equation.
   
+  # Arguments
+  # data        Chromatography data to be processed.
+  # summary_df  The summary data frame generated by batch.eval.kue()
+  # i           The index of data (in summary_df) being processed.
+  
+  # Value
+  # list        List of processed chromatography data together with characteristic
+  #             function parameters calculated.
+  
+  # load required packages
+  require(pracma)
+  require(dplyr)
+  require(minpack.lm)
+  require(gamlss.dist)
+  
+  # baseline correction
+  colnames(data) <- c("t", "f")
+  all_peaks <- findpeaks(data$f, threshold = 0.3)
+  first_peak_start <- min(min(all_peaks[, 3]), 0.02*nrow(data))
+  if (first_peak_start == 1) {message("Peak found at first time point; baseline might be unreliable.")}
+  last_peak_ends <- max(max(all_peaks[, 4]), 0.98*nrow(data))
+  if (last_peak_ends == nrow(data)) {message("Peak found at last time point; baseline might be unreliable.")}
+  baseline_sample <- data[c(1:first_peak_start, last_peak_ends:nrow(data)), ]
+  baseline_sd <- sd(baseline_sample$f)
+  baseline <- data[abs(data$f - mean(baseline_sample$f)) < 3*baseline_sd, ]
+  fit <- lm(f ~ poly(t, 3, raw = TRUE), data = baseline)
+  baseline_pred <- predict(fit, newdata = data, type = "response")
+  data$f <- data$f - baseline_pred
+  
+  # fetch peak parameters and calculate characteristic function parameters
   t_M <- summary_df$t_M[i]
+  s_M <- summary_df$s_M[i]
   t_A <- summary_df$t_A[i]
   t_B <- summary_df$t_B[i]
   tR_A <- t_A - t_M
@@ -535,12 +783,42 @@ preproc.Batman1 <- function(data, summary_df, i) {
   n_A <- tR_A/tau_A
   n_B <- tR_B/tau_B
   
-  data$t <- data$t - t_M
-  data <- data %>% filter(t >= 0)
-  lower_bound <- 1
-  upper_bound <- which.min(abs(data$t - max(0.01*max(data$t), tR_A - 20*sd_A)))
-  data$f[lower_bound:upper_bound] <- rnorm(upper_bound, 0, baseline_sd)
+  # deconvolute chromatography data from dead time signal
+  if (is.na(s_M)) {
+    data$t <- data$t - t_M
+    data <- data %>% filter(t > 0)
+  } else {
+    tM_data <- subset(data, t > (t_M - 3*s_M) & t < (t_M + 3*s_M))
+    tM.LM <- function(parms) {
+      pred <- parms[4]*dexGAUS(tM_data$t, parms[1], exp(parms[2]), exp(parms[3]))
+      obs <- tM_data$f
+      res <- (pred - obs)
+      return(res)
+    }
+    dx <- diff(tM_data$t)
+    norm <- sum(0.5*(tM_data$f[-1] + tM_data$f[-length(tM_data$f)])*dx)
+    exp_val <- sum(0.5*(tM_data$t[-1]*tM_data$f[-1] +
+                          tM_data$t[-length(tM_data$t)]*tM_data$f[-length(tM_data$f)])*dx)/norm
+    var <- sum(0.5*(((tM_data$t[-1] - exp_val)^2*tM_data$f[-1]) +
+                      ((tM_data$t[-length(tM_data$t)] - exp_val)^2*tM_data$f[-length(tM_data$f)]))*dx)/norm
+    m3 <- sum(0.5*(((tM_data$t[-1] - exp_val)^3*tM_data$f[-1]) +
+                     ((tM_data$t[-length(tM_data$t)] - exp_val)^3*tM_data$f[-length(tM_data$f)]))*dx)/norm
+    skew <- ifelse(m3 > 0, (m3/2)^(1/3), 1e-6)
+    sd <- ifelse(var > 0, sqrt(var), 1e-6)
+    parms <- c(exp_val, log(sd), log(skew), norm)
+    fitval <- nls.lm(par = parms, fn = tM.LM)
+    fit_parms <- fitval$par
+    tM_pred <- fit_parms[4]*dexGAUS(data$t, fit_parms[1], exp(fit_parms[2]), exp(fit_parms[3]))
+    deconv_A <- Mod(ifft(fft(data$f) - fft(tM_pred)))
+    deconv_t <- data$t - t_M
+    data <- data.frame(t = deconv_t, f = deconv_A)
+    data <- data %>% filter(t > 0)
+  }
+  
+  # normalization
   data$f <- data$f/sum(data$f)
+  
+  # fetch run time parameters
   np <- nrow(data)
   t_run <- max(data$t)
   
@@ -548,12 +826,33 @@ preproc.Batman1 <- function(data, summary_df, i) {
               n_A = n_A, n_B = n_B, tau_A = tau_A, tau_B = tau_B))
 }
 
-preproc.Batman2 <- function(data, summary_df, i) {
+preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
+  # Description
+  # Helper function to preprocess chromatography data for batch.eval.stoch().
+  # Used for data sets that could not be evaluated with unified equation.
+  
+  # Arguments
+  # data        Chromatography data to be processed.
+  # summary_df  The summary data frame generated by batch.eval.kue()
+  # i           The index of data (in summary_df) being processed.
+  # All other arguments have the same defaults and are passed to fit.batch.kue().
+  
+  # Value
+  # list        List of processed chromatography data together with characteristic
+  #             function parameters extrapolated.
+  
+  # load required packages
+  require(pracma)
+  require(dplyr)
+  require(minpack.lm)
+  require(gamlss.dist)
+  
+  # grouping of data in summary_df with the same metadata
   group_data <- summary_df %>%
     filter(comp_name == summary_df$comp_name[i],
            col_name == summary_df$col_name[i],
            Temp == summary_df$Temp[i])
-  if(nrow(group_data) < 2) {stop("No data available with different flow rates to extrapolate n and tau.")}
+  if(sum(!is.na(group_data$t_A)) < 1) {stop("No data available with different flow rates to extrapolate n and tau.")}
   group_data <- group_data %>% mutate(
     tR_A = t_A - t_M,
     tR_B = t_B - t_M,
@@ -566,37 +865,115 @@ preproc.Batman2 <- function(data, summary_df, i) {
     n_A = tR_A/tau_A,
     n_B = tR_B/tau_B
   )
+  
+  # extrapolating characteristic function parameters
   model_n_A <- lm(n ~ flow, data = data.frame(n = group_data$n_A, flow = group_data$flow))
   n_A <- predict(model_n_A, newdata = data.frame(flow = summary_df$flow[i]))
+  if (sum(!is.na(group_data$t_A)) == 1) {
+    n_A <- summary_df$flow[i]*na.omit(group_data$n_A)[[1]]/na.omit(group_data$flow)[[1]]
+  }
   model_n_B <- lm(n ~ flow, data = data.frame(n = group_data$n_B, flow = group_data$flow))
   n_B <- predict(model_n_B, newdata = data.frame(flow = summary_df$flow[i]))
+  if (sum(!is.na(group_data$t_A)) == 1) {
+    n_B <- summary_df$flow[i]*na.omit(group_data$n_B)[[1]]/na.omit(group_data$flow)[[1]]
+  }
   tau_A <- mean(group_data$tau_A, na.rm = TRUE)
   tau_B <- mean(group_data$tau_B, na.rm = TRUE)
   
+  # baseline correction
   colnames(data) <- c("t", "f")
-  baseline_sample <- data[1:(0.02*nrow(data)), ]
+  all_peaks <- findpeaks(data$f, threshold = 0.3)
+  first_peak_start <- min(min(all_peaks[, 3]), 0.02*nrow(data))
+  if (first_peak_start == 1) {message("Peak found at first time point; baseline might be unreliable.")}
+  last_peak_ends <- max(max(all_peaks[, 4]), 0.98*nrow(data))
+  if (last_peak_ends == nrow(data)) {message("Peak found at last time point; baseline might be unreliable.")}
+  baseline_sample <- data[c(1:first_peak_start, last_peak_ends:nrow(data)), ]
   baseline_sd <- sd(baseline_sample$f)
-  baseline <- data[abs(data$f) < 12*baseline_sd, ]
-  base_corr_coef <- summary(lm(f ~ t, baseline))$coef
-  base_corr <- data$t*base_corr_coef[2, 1] + base_corr_coef[1, 1]
-  data$f <- data$f - base_corr
+  baseline <- data[abs(data$f - mean(baseline_sample$f)) < 3*baseline_sd, ]
+  fit <- lm(f ~ poly(t, 3, raw = TRUE), data = baseline)
+  baseline_pred <- predict(fit, newdata = data, type = "response")
+  data$f <- data$f - baseline_pred
   
+  # finding dead time
+  t_M <- summary_df$t_M[i]
+  s_M <- summary_df$s_M[i]
   peaks <- findpeaks(data$f,
-                     threshold = 0.3,
-                     minpeakheight = 50*baseline_sd,
-                     minpeakdistance = (5/100)*nrow(data))
+                     threshold = threshold,
+                     minpeakheight = minSNR*baseline_sd,
+                     minpeakdistance = (1/100)*nrow(data))
   peaks <- data.frame(peaks)
   colnames(peaks) <- c("f", "ti", "ti_start", "ti_end")
   peaks <- peaks %>% arrange(ti)
-  t0peak <- peaks[1, ]
-  t_M <- data$t[t0peak$ti]
+  peaks$t <- data$t[peaks$ti]
+  if (is.na(t_M)) {
+    peak_tab <- tryCatch(
+      read.csv("peak_table.csv", header = TRUE, sep = ",", dec = "."),
+      error = function(e) NULL
+    )
+    if (!is.null(peak_tab)) {
+      peak_values <- peak_tab %>% filter(file_name == summary_df$file[i])
+      if (!is.na(peak_values$t_M)) {
+        t0peak <- peaks %>% slice_min(abs(peaks$t - peak_values$t_M), n = 1, with_ties = FALSE)
+        t_M <- t0peak$t
+        t_Mi <- t0peak$ti
+        h_M <- t0peak$f
+        w_M.i <- which.min(abs(data$f[t0peak[1, 3]:t_Mi] - h_M/2)) + t0peak[1, 3] - 1
+        w_M.i2 <- which.min(abs(data$f[t_Mi:t0peak[1, 4]] - h_M/2)) + t_Mi - 1
+        w_M <- data$t[w_M.i2] - data$t[w_M.i]
+        s_M <- w_M/sqrt(8*log(2))
+      }
+    } else {
+      t0peak <- peaks[1, ]
+      t_M <- t0peak$t
+      t_Mi <- t0peak$ti
+      h_M <- t0peak$f
+      w_M.i <- which.min(abs(data$f[t0peak[1, 3]:t_Mi] - h_M/2)) + t0peak[1, 3] - 1
+      w_M.i2 <- which.min(abs(data$f[t_Mi:t0peak[1, 4]] - h_M/2)) + t_Mi - 1
+      w_M <- data$t[w_M.i2] - data$t[w_M.i]
+      s_M <- w_M/sqrt(8*log(2))
+    }
+  }
   
-  data$t <- data$t - t_M
-  data <- data %>% filter(t >= 0)
-  lower_bound <- 1
-  upper_bound <- which.min(abs(data$t - max(0.01*max(data$t), n_A*tau_A - 40*n_A*tau_A^2)))
-  data$f[lower_bound:upper_bound] <- rnorm(upper_bound, 0, baseline_sd)
+  # checking n and tau start values
+  if (abs(n_A*tau_A - peaks$t[which.max(peaks$f)] + t_M) > 0.5) {n_A <- (peaks$t[which.max(peaks$f)] - t_M)/tau_A}
+  if (abs(n_B*tau_B - peaks$t[which.max(peaks$f)] + t_M) > 0.5) {n_B <- (peaks$t[which.max(peaks$f)] - t_M)/tau_B}
+  
+  # deconvolute chromatography data from dead time signal
+  if (is.na(s_M)) {
+    data$t <- data$t - t_M
+    data <- data %>% filter(t > 0)
+  } else {
+    tM_data <- subset(data, t > (t_M - 3*s_M) & t < (t_M + 3*s_M))
+    tM.LM <- function(parms) {
+      pred <- parms[4]*dexGAUS(tM_data$t, parms[1], exp(parms[2]), exp(parms[3]))
+      obs <- tM_data$f
+      res <- (pred - obs)
+      return(res)
+    }
+    dx <- diff(tM_data$t)
+    norm <- sum(0.5*(tM_data$f[-1] + tM_data$f[-length(tM_data$f)])*dx)
+    exp_val <- sum(0.5*(tM_data$t[-1]*tM_data$f[-1] +
+                          tM_data$t[-length(tM_data$t)]*tM_data$f[-length(tM_data$f)])*dx)/norm
+    var <- sum(0.5*(((tM_data$t[-1] - exp_val)^2*tM_data$f[-1]) +
+                        ((tM_data$t[-length(tM_data$t)] - exp_val)^2*tM_data$f[-length(tM_data$f)]))*dx)/norm
+    m3 <- sum(0.5*(((tM_data$t[-1] - exp_val)^3*tM_data$f[-1]) +
+                        ((tM_data$t[-length(tM_data$t)] - exp_val)^3*tM_data$f[-length(tM_data$f)]))*dx)/norm
+    skew <- ifelse(m3 > 0, (m3/2)^(1/3), 1e-6)
+    sd <- ifelse(var > 0, sqrt(var), 1e-6)
+    parms <- c(exp_val, log(sd), log(skew), norm)
+    fitval <- nls.lm(par = parms, fn = tM.LM)
+    fit_parms <- fitval$par
+    tM_pred <- fit_parms[4]*dexGAUS(data$t, fit_parms[1], exp(fit_parms[2]), exp(fit_parms[3]))
+    deconv_A <- Mod(ifft(fft(data$f) - fft(tM_pred)))
+    deconv_t <- data$t - t_M
+    data <- data.frame(t = deconv_t, f = deconv_A)
+    data <- data %>% filter(t > 0)
+  }
+  
+  # normalization
   data$f <- data$f/sum(data$f)
+  
+  # fetch run time parameters
   np <- nrow(data)
   t_run <- max(data$t)
   
@@ -604,27 +981,57 @@ preproc.Batman2 <- function(data, summary_df, i) {
               n_A = n_A, n_B = n_B, tau_A = tau_A, tau_B = tau_B))
 }
 
-batch.eval.stoch <- function(path, alpha = 0.5) {
+batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
+  # Description
+  # This function performs batch evaluation of the stochastic model on chromatography
+  # files provided in .csv format if unified equation modeling has been performed.
+  
+  # Arguments
+  # path    The path where the files are found.
+  # alpha   Fraction of the first eluted isomer in the injected sample. Default is 0.5.
+  # All other arguments have the same defaults and are passed to fit.batch.kue().
+  
+  # Value
+  # The function call generates a new folder in the path and saves the chromatography
+  # plots and fitted stochastic models as .png files. The summary_log.txt and summary_data.csv
+  # are appended with fitted characteristic parameters, interconversion rates and
+  # fitted thermodynamic parameters.
+  
+  # References
+  # Felinger, A. (2008) Molecular dynamic theories in chromatography. Journal of
+  # Chromatography A, 1184, 20-41.
+  #
+  # Sepsey, A., Németh, D. R., Németh, G., Felinger, A. (2018) Rate constant determination of 
+  # interconverting enantiomers by chiral chromatography using a stochastic model.
+  # Journal of Chromatography A, 1564, 155-162.
+  
+  # load required packages
   require(data.table)
   require(readr)
+  require(fs)
   require(ggplot2)
   require(stringr)
   require(tools)
   require(dplyr)
+  require(broom)
   require(DEoptim)
   require(minpack.lm)
   require(parallel)
+  require(parallelly)
   
+  # set path as working directory and create directory for plots
   setwd(path)
   output_dir <- "plots_stoch"
   dir_create(output_dir)
   
-  #read in summary and log files from kue modeling
+  # read summary and log files from kue modeling, update files
   summary_df <- tryCatch({
     fread("summary_data.csv")
   }, error = function(e) {
     stop("The file 'summary_data.csv' was not found. Perform unified equation modeling first.")
   })
+  summary_df <- summary_df %>%
+    arrange(desc(flow))
   log_df <- fread("summary_log.txt", na.strings = "")
   summary_df$n_A <- as.numeric(NA)
   summary_df$n_B <- as.numeric(NA)
@@ -635,14 +1042,21 @@ batch.eval.stoch <- function(path, alpha = 0.5) {
   log_df$stoch_status <- "Success"
   log_df$stoch_error <- rep(NA_character_, nrow(log_df))
   
-  #loop for stoch modeling
+  # evaluate files with stochastic model
   for (i in 1:nrow(summary_df)) {
+    message(sprintf("Evaluating file %d out of %d", i, nrow(summary_df)))
+    
+    # extract file and name
     file <- summary_df$file[i]
     base_name <- tools::file_path_sans_ext(basename(file))
-    title <- str_replace_all(base_name, "_", ", ")
-    title <- str_replace(title, "(\\b)(\\d)(\\d+)(,\\s*\\d+\\s*$)", "\\2.\\3\\4")
-    title <- paste(title, "(comp, col, flow ml/min, °C)")
+    base_name_parts <- str_split(base_name, "_", simplify = TRUE)[1:4]
+    comp_name <- base_name_parts[1]
+    col_name <- base_name_parts[2]
+    flow <- as.numeric(str_replace(base_name_parts[3], "^(\\d)(\\d+)$", "\\1.\\2"))
+    Temp <- as.numeric(base_name_parts[4]) + 273.15
+    title <- paste(paste(comp_name, col_name, flow, Temp - 273.15, sep = ", "), "(comp, col, flow mL/min, °C)")
     
+    # read chromatograghy files
     encoding <- readr::guess_encoding(file)$encoding
     sep <- smart_fread(file, encoding = encoding)$sep
     dec <- smart_fread(file, encoding = encoding)$dec
@@ -652,19 +1066,25 @@ batch.eval.stoch <- function(path, alpha = 0.5) {
     }
     
     tryCatch({
+      # preprocess chromatography data
       if (!is.na(summary_df$t_A[i])) {
         preproc_data <- preproc.Batman1(df, summary_df, i)
       } else {
-        preproc_data <- preproc.Batman2(df, summary_df, i)
+        preproc_data <- preproc.Batman2(df, summary_df, i, threshold, minSNR)
         summary_df$t_M[i] <- preproc_data$t_M
+        summary_df$t_A[i] <- min(preproc_data$n_A*preproc_data$tau_A, preproc_data$n_B*preproc_data$tau_B) +
+          summary_df$t_M[i]
+        summary_df$t_B[i] <- max(preproc_data$n_A*preproc_data$tau_A, preproc_data$n_B*preproc_data$tau_B) +
+          summary_df$t_M[i]
+        summary_df$w_A[i] <- ifelse(summary_df$t_A[i] < summary_df$t_B[i], sqrt(16*log(2)*preproc_data$n_A*preproc_data$tau_A^2),
+                                    sqrt(16*log(2)*preproc_data$n_B*preproc_data$tau_B^2))
+        summary_df$w_B[i] <- ifelse(summary_df$t_A[i] > summary_df$t_B[i], sqrt(16*log(2)*preproc_data$n_A*preproc_data$tau_A^2),
+                                    sqrt(16*log(2)*preproc_data$n_B*preproc_data$tau_B^2))
       }
-      
-      # np <- preproc_data$np
-      # t_run <- preproc_data$t_run
-      # alpha <- alpha
       
       #required optim functions
       Batman.DEoptim <- function(parms) {
+        # Differential Evolution Optimization genetic algorithm
         parms1 <- parms[1]
         parms2 <- parms[2]
         parms3 <- parms[3]
@@ -677,6 +1097,7 @@ batch.eval.stoch <- function(path, alpha = 0.5) {
                preproc_data$f)^2, na.rm = TRUE)
       }
       Batman.LM <- function(parms) {
+        # Levenberg-Marquadt algorithm
         pred <- Batman(preproc_data$np, preproc_data$t_run,
                        parms[1], parms[2], parms[3],
                        parms[4], parms[5], parms[6],
@@ -686,6 +1107,7 @@ batch.eval.stoch <- function(path, alpha = 0.5) {
         return(res)
       }
       
+      # set bounds and control for genetic algorithm
       lower <- c(preproc_data$n_A/2, preproc_data$n_B/2,
                  preproc_data$tau_A/2, preproc_data$tau_B/2, 0)
       upper <- c(2*preproc_data$n_A, 2*preproc_data$n_B,
@@ -697,6 +1119,7 @@ batch.eval.stoch <- function(path, alpha = 0.5) {
                                          parVar = c("alpha", "Batman"))
       DEoptim_res <- DEoptim(Batman.DEoptim, lower, upper, control = DEoptim_control)
       
+      # Levenberg-Marquadt algorithm with warm start
       parms <- c(DEoptim_res$optim$bestmem, DEoptim_res$optim$bestmem[5])
       fitval <- nls.lm(par = parms, fn = Batman.LM, control = nls.lm.control(maxiter = 100))
       fit_parms <- fitval$par
@@ -705,7 +1128,7 @@ batch.eval.stoch <- function(path, alpha = 0.5) {
                      fit_parms[4], fit_parms[5], fit_parms[6],
                      alpha)
       
-      # write fit_parms
+      # write fitted parameters
       summary_df$n_A[i] <- fit_parms[1]
       summary_df$n_B[i] <- fit_parms[2]
       summary_df$tau_A[i] <- fit_parms[3]
@@ -719,8 +1142,8 @@ batch.eval.stoch <- function(path, alpha = 0.5) {
         geom_line(aes(x = pred$t, y = pred$f_conv), col = "red", linetype = 2) +
         labs(title = title,
              subtitle = "Stochastic modeling",
-             x = "time [min]",
-             y = "intensity") +
+             x = "Time (min)",
+             y = "Intensity") +
         geom_segment(aes(x = 0, y = max(pred$f_conv),
                          xend = max(pred$t)/20, yend = max(pred$f_conv)),
                      col = "red", linetype = 2) +
@@ -729,12 +1152,12 @@ batch.eval.stoch <- function(path, alpha = 0.5) {
       out_file <- file.path(output_dir, paste0(base_name, ".png"))
       ggsave(out_file, plot = plot, width = 6, height = 4, dpi = 300)
     }, error = function(e) {
-      log_df$stoch_status[i] <<- "Error"
-      log_df$stoch_error[i] <<- conditionMessage(e)
+      log_df$stoch_status[log_df$file == file] <<- "Error"
+      log_df$stoch_error[log_df$file == file] <<- conditionMessage(e)
     })
   }
   
-  #add linreg a/b ~ t_A
+  #add linreg a, b ~ t_A
   summary_df <- summary_df %>%
     group_by(comp_name, col_name, Temp) %>%
     group_modify(~ {
@@ -792,39 +1215,53 @@ batch.eval.stoch <- function(path, alpha = 0.5) {
     group_modify(~ {
       valid_data <- .x %>% filter(!is.na(kstoch_f_tA) & !is.na(Temp)) %>%
         group_by(Temp) %>%
-        summarise(mean_kstoch = mean(kstoch_f_tA, na.rm = TRUE), .groups = "drop")
-      EP_intercept <- NA_real_
-      EP_slope <- NA_real_
-      EP_intercept_se <- NA_real_
-      EP_slope_se <- NA_real_
-      EP_r2 <- NA_real_
+        summarise(mean_kstoch_f = mean(kstoch_f_tA, na.rm = TRUE),
+                  mean_kstoch_r = mean(kstoch_r_tA, na.rm = TRUE),
+                  .groups = "drop")
+      EP_f_intercept <- NA_real_
+      EP_f_slope <- NA_real_
+      EP_f_intercept_se <- NA_real_
+      EP_f_slope_se <- NA_real_
+      EP_f_r2 <- NA_real_
+      EP_r_intercept <- NA_real_
+      EP_r_slope <- NA_real_
+      EP_r_intercept_se <- NA_real_
+      EP_r_slope_se <- NA_real_
+      EP_r_r2 <- NA_real_
       if (nrow(valid_data) >= 2) {
-        EP_model <- lm(I(log(mean_kstoch/Temp)) ~ I(1/Temp), data = valid_data)
-        EP_tidy_model <- tidy(EP_model)
-        EP_glance_model <- glance(EP_model)
-        EP_intercept <- EP_tidy_model$estimate[EP_tidy_model$term == "(Intercept)"]
-        EP_slope <- EP_tidy_model$estimate[EP_tidy_model$term == "I(1/Temp)"]
-        EP_intercept_se <- EP_tidy_model$std.error[EP_tidy_model$term == "(Intercept)"]
-        EP_slope_se <- EP_tidy_model$std.error[EP_tidy_model$term == "I(1/Temp)"]
-        EP_r2 <- EP_glance_model$r.squared
+        EP_f_model <- lm(I(log(mean_kstoch_f/Temp)) ~ I(1/Temp), data = valid_data)
+        EP_f_tidy_model <- tidy(EP_f_model)
+        EP_f_glance_model <- glance(EP_f_model)
+        EP_f_intercept <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "(Intercept)"]
+        EP_f_slope <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "I(1/Temp)"]
+        EP_f_intercept_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "(Intercept)"]
+        EP_f_slope_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "I(1/Temp)"]
+        EP_f_r2 <- EP_f_glance_model$r.squared
+        EP_r_model <- lm(I(log(mean_kstoch_r/Temp)) ~ I(1/Temp), data = valid_data)
+        EP_r_tidy_model <- tidy(EP_r_model)
+        EP_r_glance_model <- glance(EP_r_model)
+        EP_r_intercept <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "(Intercept)"]
+        EP_r_slope <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "I(1/Temp)"]
+        EP_r_intercept_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "(Intercept)"]
+        EP_r_slope_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "I(1/Temp)"]
+        EP_r_r2 <- EP_r_glance_model$r.squared
       }
       .x %>%
-        mutate(dH = -EP_slope*8.314,
-               dH_se = EP_slope_se*8.314,
-               dS = (EP_intercept - log(2.084e10))*8.314,
-               dS_de = EP_intercept_se*8.314,
-               EP_r2 = EP_r2)
+        mutate(dH_f = -EP_f_slope*8.314,
+               dH_f_se = EP_f_slope_se*8.314,
+               dS_f = (EP_f_intercept - log(2.084e10))*8.314,
+               dS_f_se = EP_f_intercept_se*8.314,
+               EP_f_r2 = EP_f_r2,
+               dH_r = -EP_r_slope*8.314,
+               dH_r_se = EP_r_slope_se*8.314,
+               dS_r = (EP_r_intercept - log(2.084e10))*8.314,
+               dS_r_se = EP_r_intercept_se*8.314,
+               EP_r_r2 = EP_r_r2)
     }) %>%
     ungroup()
   
+  # rewrite files
   fwrite(log_df, "summary_log.txt", sep = "\t", na = "")
   fwrite(summary_df, "summary_data.csv", sep = ",", dec = ".")
   message("Processing complete.")
 }
-
-################################################################################
-#test batch import
-
-path <- "~/01_Research/03_Statistics/Batman/sample data/lorabatmancell2"
-batch.eval.kue(path = path)
-batch.eval.stoch(path = path)
