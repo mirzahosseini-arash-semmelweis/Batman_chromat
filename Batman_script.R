@@ -58,7 +58,7 @@ plot.runs <- function(path) {
     col_name <- base_name_parts[2]
     flow <- as.numeric(str_replace(base_name_parts[3], "^(\\d)(\\d+)$", "\\1.\\2"))
     temp <- as.numeric(base_name_parts[4])
-    title <- paste(paste(comp_name, col_name, flow, temp, sep = ", "), "(comp, col, flow mL/min, °C)")
+    title <- paste(paste(comp_name, col_name, flow, temp, sep = ", "), "(comp, col, flow ml/min, °C)")
     encoding <- readr::guess_encoding(file)$encoding
     sep <- smart_fread(file, encoding = encoding)$sep
     dec <- smart_fread(file, encoding = encoding)$dec
@@ -83,7 +83,7 @@ plot.runs <- function(path) {
 
 fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
                           peak_table = FALSE, file, t0_given = FALSE,
-                          enantio = TRUE, microrev = TRUE, A0 = 0.5) {
+                          microrev = FALSE, A0 = 0.5) {
   # Description
   # Helper function to fit chromatography interconversion kinetic constant from
   # unified equation using a two-step iterative minimization.
@@ -121,13 +121,9 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
   # t0_given    Logical, indicating whether dead peaks are included in the chromatograms.
   #             If TRUE, the algorithm will not look for dead peaks and take t_M
   #             values in "peak_table.csv" as given. Default is FALSE.
-  # enantio     Logical, indicating whether enantiomerization occurs during
-  #             interconversion, in which case equlibrium constant is fixed as 1.
-  #             If FALSE, general isomerization is assumed and equilibrium constant
-  #             is estimated from the two peak areas (cut in the middle). Default
-  #             is TRUE.
   # microrev    Logical, indicating whether the principle of microscopic reversibility
-  #             applies. Default is TRUE.
+  #             applies. Default is FALSE, which takes into account that the rate
+  #             constants of conversion of A and B are rendered differently.
   # A0          Fraction of the first eluted isomer in the injected sample.
   #             Default is 0.5.
   
@@ -149,7 +145,6 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
   if (!is.numeric(threshold)) stop("Argument 'threshold' must be numeric.")
   if (!is.numeric(minSNR)) stop("Argument 'minSNR' must be numeric.")
   if (!is.numeric(minpeakdist)) stop("Argument 'minpeakdist' must be numeric.")
-  if (!is.logical(enantio)) stop("Argument 'enantio' must be boolean")
   if (!is.logical(microrev)) stop("Argument 'microrev' must be boolean")
   if (!is.numeric(A0)) stop("Argument 'A0' must be numeric.")
   if (A0 > 1 | A0 < 0) stop("Argument 'A0' must be between 0 and 1.")
@@ -229,13 +224,17 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
   if (!anyNA(t0peak)) {
     t_Mi <- t0peak$ti
     h_M <- t0peak$A
-    w_M.i <- which.min(abs(data$A[t0peak[1, 3]:t_Mi] - h_M/2)) + t0peak[1, 3] - 1
-    w_M.i2 <- which.min(abs(data$A[t_Mi:t0peak[1, 4]] - h_M/2)) + t_Mi - 1
+    thresh <- max(abs(diff(data$A)))
+    idx_left <- 1:t_Mi
+    idx_right <- t_Mi:nrow(data)
+    w_M.i <- idx_left[max(which(abs(data$A[idx_left] - h_M/2) <= thresh))]
+    w_M.i2 <- idx_right[min(which(abs(data$A[idx_right] - h_M/2) <= thresh))]
     w_M <- data$t[w_M.i2] - data$t[w_M.i]
     s_M <- w_M/sqrt(8*log(2))
   } else {
     s_M <- NA
   }
+  thresh <- max(abs(diff(data$A)))
   t_Ai <- peaks[1, 2]
   t_Bi <- peaks[2, 2]
   t_A <- data$t[t_Ai]
@@ -250,18 +249,22 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
   } else {
     h_p <- 100*h_mid/h_B
   }
-  w_A.i <- which.min(abs(data$A[peaks[1, 3]:t_Ai] - h_A/2)) + peaks[1, 3] - 1
-  w_A.i2 <- which.min(abs(data$A[t_Ai:peaks[1, 4]] - h_A/2)) + t_Ai - 1
+  idx_leftA <- 1:t_Ai
+  idx_rightA <- t_Ai:nrow(data)
+  w_A.i <- idx_leftA[max(which(abs(data$A[idx_leftA] - h_A/2) <= thresh))]
+  w_A.i2 <- idx_rightA[min(which(abs(data$A[idx_rightA] - h_A/2) <= thresh))]
   w_A <- ifelse(h_mid >= h_A/2, 2*abs(data$t[w_A.i] - t_A), data$t[w_A.i2] - data$t[w_A.i])
   w_As <- w_A*60
   w_A.1 <- data$t[w_A.i]
   w_A.2 <- ifelse(h_mid >= h_A/2, w_A + w_A.1, data$t[w_A.i2])
-  w_B.i <- which.min(abs(data$A[peaks[2, 3]:t_Bi] - h_B/2)) + peaks[2, 3] - 1
-  w_B.i2 <- which.min(abs(data$A[t_Bi:peaks[2, 4]] - h_B/2)) + t_Bi - 1
+  idx_leftB <- 1:t_Bi
+  idx_rightB <- t_Bi:nrow(data)
+  w_B.i <- idx_leftB[max(which(abs(data$A[idx_leftB] - h_B/2) <= thresh))]
+  w_B.i2 <- idx_rightB[min(which(abs(data$A[idx_rightB] - h_B/2) <= thresh))]
   w_B <- ifelse(h_mid >= h_B/2, 2*abs(data$t[w_B.i2] - t_B), data$t[w_B.i2] - data$t[w_B.i])
   w_Bs <- w_B*60
-  w_B.1 <- data$t[w_B.i]
-  w_B.2 <- ifelse(h_mid >= h_B/2, w_B + w_B.1, data$t[w_B.i2])
+  w_B.2 <- data$t[w_B.i2]
+  w_B.1 <- ifelse(h_mid >= h_B/2, w_B.2 - w_B, data$t[w_B.i])
   s_As <- w_As/sqrt(8*log(2))
   s_Bs <- w_Bs/sqrt(8*log(2))
   A_spl <- spline(x = data$t[peaks[1, 3]:mean(c(t_Ai, t_Bi))],
@@ -273,83 +276,42 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
                   n = 2000)
   B <- sum(B_spl$y)
   K <- A/B
-  N <- mean(5.54*(c(t_A, t_B)/c(w_A, w_B))^2)
-  
-  # override equilibrium constant if necessary and apply microscopic reversibility
-  if (enantio) {K <- 1}
-  if (microrev) {
-    t_xs <- t_As
-  } else {t_xs <- t_Bs}
+  N <- mean(5.545*(c(t_A, t_B)/c(w_A, w_B))^2)
   
   # calculate kue
-  calc.kue1 <- function(k, K, t_As, t_Bs, t_xs, s_As, s_Bs, N, h_p, A0) {
+  calc.kue1 <- function(t_As, t_Bs, s_As, s_Bs, N, h_p, A0) {
     -(1/t_As)*(
       log(
-        (1 - A0)*exp(-K*k*t_xs)
-        *
-          (
-            (100*exp(-(t_Bs - t_As)^2/(8*s_Bs^2)) - h_p*exp(-(t_Bs - t_As)^2/(2*s_Bs^2)))
-            /
-              (s_Bs*sqrt(2*pi))
-            -
-              100/(t_Bs - t_As)
-          )
-        +
-          (100*(1 - A0) + A0*(100 - h_p*(1 + sqrt(2/(pi*N)))))/(t_Bs - t_As)
-      )
-      -
-        log(
-          A0*(
-            (h_p - 100*exp(-(t_As - t_Bs)^2/(8*s_As^2)))/(s_As*sqrt(2*pi))
-            +
-              (100 - h_p*(1 + sqrt(2/(pi*N))))/(t_Bs - t_As)
-          )
+        (100*(1 - A0) + A0*(100 - h_p*(1 + sqrt(2/(pi*N)))))/(t_Bs - t_As)
+      ) - log(
+        (1 - A0)*(
+          (h_p*exp(-(t_Bs - t_As)^2/(2*s_Bs^2)) - 100*exp(-(t_Bs - t_As)^2/(8*s_Bs^2)))/(s_Bs*sqrt(2*pi)) + 100/(t_Bs - t_As)
+        ) - A0*(
+          (100*exp(-(t_Bs - t_As)^2/(8*s_As^2)) - h_p)/(s_As*sqrt(2*pi)) + (h_p*(1 + sqrt(2/(pi*N))) - 100)/(t_Bs - t_As)
         )
+      )
     )
   }
-  calc.kue2 <- function(k, K, t_As, t_Bs, t_xs, s_As, s_Bs, N, h_p, A0) {
+  calc.kue2 <- function(t_As, t_Bs, s_As, s_Bs, N, h_p, A0) {
     -(1/t_As)*(
       log(
-        (1 - A0)*exp(-K*k*t_xs)
-        *
-          (
-            (100*exp(-(t_As - t_Bs)^2/(8*s_Bs^2)) - h_p)
-            /
-              (s_Bs*sqrt(2*pi))
-            +
-              (h_p*(1 - sqrt(2/(pi*N))) - 100)/(t_Bs - t_As)
-          )
-        +
-          (100*A0 + (1 - A0)*(100 - h_p*(1 - sqrt(2/(pi*N)))))/(t_Bs - t_As)
-      )
-      -
-        log(
-          A0*(
-            (h_p*exp(-(t_Bs - t_As)^2/(2*s_As^2)) - 100*exp(-(t_Bs - t_As)^2/(8*s_As^2)))/(s_As*sqrt(2*pi))
-            +
-              100/(t_Bs - t_As)
-          )
+        (100*A0 + (1 - A0)*(100 - h_p*(1 - sqrt(2/(pi*N)))))/(t_Bs - t_As)
+      ) - log(
+        A0*(
+          (h_p*exp(-(t_Bs - t_As)^2/(2*s_As^2)) - 100*exp(-(t_Bs - t_As)^2/(8*s_As^2)))/(s_As*sqrt(2*pi)) + 100/(t_Bs - t_As)
+        ) - (1 - A0)*(
+          (100*exp(-(t_Bs - t_As)^2/(8*s_Bs^2)) - h_p)/(s_Bs*sqrt(2*pi)) + (h_p*(1 - sqrt(2/(pi*N))) - 100)/(t_Bs - t_As)
         )
+      )
     )
   }
-  k <- seq(from = 1e-6, to = 1e-2, length = 100)
+  
   if (h_A >= h_B) {
-    f_k <- calc.kue1(k, K, t_As, t_Bs, t_xs, s_As, s_Bs, N, h_p, A0)
+    kue_f <- calc.kue1(t_As, t_Bs, s_As, s_Bs, N, h_p, A0)
   } else {
-    f_k <- calc.kue2(k, K, t_As, t_Bs, t_xs, s_As, s_Bs, N, h_p, A0)
+    kue_f <- calc.kue2(t_As, t_Bs, s_As, s_Bs, N, h_p, A0)
   }
-  root.i <- which.min(abs(k - f_k))
-  root <- k[root.i]
-  if (length(root) == 0) {stop("Unified equation did not result in finite value.")}
-  k <- seq(from = root/2, to = root*2, length = 100)
-  if (h_A >= h_B) {
-    f_k <- calc.kue1(k, K, t_As, t_Bs, t_xs, s_As, s_Bs, N, h_p, A0)
-  } else {
-    f_k <- calc.kue2(k, K, t_As, t_Bs, t_xs, s_As, s_Bs, N, h_p, A0)
-  }
-  lm <- summary(lm((k - f_k) ~ k))
-  kue_f <- as.numeric(-lm$coefficients[1, 1]/lm$coefficients[2, 1])
-  if (t_xs == t_As) {
+  if (microrev) {
     kue_r <- kue_f*K*t_As/t_Bs
   } else {kue_r <- kue_f*K}
   
@@ -362,7 +324,6 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
                  t_B = t_B,
                  t_As = t_As,
                  t_Bs = t_Bs,
-                 t_xs = t_xs,
                  h_A = h_A,
                  h_B = h_B,
                  h_mid = h_mid,
@@ -392,7 +353,7 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
 
 batch.eval.kue <- function(path, threshold = 0.3, minSNR = 10, minpeakdist = 1,
                            peak_table = FALSE, t0_given = FALSE,
-                           enantio = TRUE, microrev = TRUE, A0 = 0.5) {
+                           microrev = FALSE, A0 = 0.5) {
   # Description
   # This function performs batch evaluation of the unified equation on chromatography
   # files provided in .csv format. It uses the algorithm of fit.batch.kue().
@@ -448,7 +409,7 @@ batch.eval.kue <- function(path, threshold = 0.3, minSNR = 10, minpeakdist = 1,
     col_name <- base_name_parts[2]
     flow <- as.numeric(str_replace(base_name_parts[3], "^(\\d)(\\d+)$", "\\1.\\2"))
     Temp <- as.numeric(base_name_parts[4]) + 273.15
-    title <- paste(paste(comp_name, col_name, flow, Temp - 273.15, sep = ", "), "(comp, col, flow mL/min, °C)")
+    title <- paste(paste(comp_name, col_name, flow, Temp - 273.15, sep = ", "), "(comp, col, flow ml/min, °C)")
     summary_row <- data.frame(file = basename(file),
                               comp_name = comp_name,
                               col_name = col_name,
@@ -469,8 +430,7 @@ batch.eval.kue <- function(path, threshold = 0.3, minSNR = 10, minpeakdist = 1,
       }
       # result table
       result <- fit.batch.kue(data = df, threshold, minSNR, minpeakdist,
-                              peak_table, file, t0_given,
-                              enantio, microrev, A0)
+                              peak_table, file, t0_given, microrev, A0)
       Gue_f <- -log(result$kue_f/(1.380662e-23*Temp*0.5/6.626176e-34))*8.31441*Temp
       Gue_r <- -log(result$kue_r/(1.380662e-23*Temp*0.5/6.626176e-34))*8.31441*Temp
       result$Gue_f <- Gue_f
@@ -522,7 +482,7 @@ batch.eval.kue <- function(path, threshold = 0.3, minSNR = 10, minpeakdist = 1,
                  xend = mean(c(result$t_A, result$t_B)), yend = result$h_mid,
                  col = "dodgerblue3") +
         annotate("text", x = mean(c(result$t_A, result$t_B)), y = result$h_mid + 0.05*h_max,
-                 label = round(result$h_mid, 3), col = "dodgerblue3") +
+                 label = round(result$h_mid, 2), col = "dodgerblue3") +
         annotate("segment", x = result$w_A.1, y = result$h_A/2,
                  xend = result$w_A.2, yend = result$h_A/2, col = "dodgerblue3") +
         annotate("text", x = result$w_A.2 + 0.1*t_max, y = result$h_A/2, col = "dodgerblue3",
@@ -711,10 +671,14 @@ Batman <- function(np, t_run, n_A, n_B, tau_A, tau_B, a, b, alpha) {
     exp(-a*(1 - x) - b*x)*
     besselI(sqrt(4*a*b*x*(1 - x)), 0)
   P_B0 <- exp(-b)
-  P_A <- alpha*(1 - P_A0)*(P_AA + P_BA)/sum(P_AA + P_BA, na.rm = T)
+  P_AA_norm <- (1 - P_A0)*P_AA/sum(P_AA + P_AB, na.rm = T)
+  P_AB_norm <- (1 - P_A0)*P_AB/sum(P_AA + P_AB, na.rm = T)
+  P_BB_norm <- (1 - P_B0)*P_BB/sum(P_BB + P_BA, na.rm = T)
+  P_BA_norm <- (1 - P_B0)*P_BA/sum(P_BB + P_BA, na.rm = T)
+  P_A <- alpha*P_AA_norm + beta*P_BA_norm
   P_A[1] <- alpha*P_A0
   P_A <- c(rep(0, tA.i - 1), P_A, rep(0, np - tB.i + 1))
-  P_B <- beta*(1 - P_B0)*(P_BB + P_AB)/sum(P_BB + P_AB, na.rm = T)
+  P_B <- beta*P_BB_norm + alpha*P_AB_norm
   P_B[length(P_B)] <- beta*P_B0
   P_B <- c(rep(0, tA.i - 1), P_B, rep(0, np - tB.i + 1))
   P_A[is.nan(P_A)] <- 0
@@ -917,8 +881,11 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
         t_M <- t0peak$t
         t_Mi <- t0peak$ti
         h_M <- t0peak$f
-        w_M.i <- which.min(abs(data$f[t0peak[1, 3]:t_Mi] - h_M/2)) + t0peak[1, 3] - 1
-        w_M.i2 <- which.min(abs(data$f[t_Mi:t0peak[1, 4]] - h_M/2)) + t_Mi - 1
+        thresh <- max(abs(diff(data$f)))
+        idx_left <- 1:t_Mi
+        idx_right <- t_Mi:nrow(data)
+        w_M.i <- idx_left[max(which(abs(data$f[idx_left] - h_M/2) <= thresh))]
+        w_M.i2 <- idx_right[min(which(abs(data$f[idx_right] - h_M/2) <= thresh))]
         w_M <- data$t[w_M.i2] - data$t[w_M.i]
         s_M <- w_M/sqrt(8*log(2))
       }
@@ -927,8 +894,11 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
       t_M <- t0peak$t
       t_Mi <- t0peak$ti
       h_M <- t0peak$f
-      w_M.i <- which.min(abs(data$f[t0peak[1, 3]:t_Mi] - h_M/2)) + t0peak[1, 3] - 1
-      w_M.i2 <- which.min(abs(data$f[t_Mi:t0peak[1, 4]] - h_M/2)) + t_Mi - 1
+      thresh <- max(abs(diff(data$f)))
+      idx_left <- 1:t_Mi
+      idx_right <- t_Mi:nrow(data)
+      w_M.i <- idx_left[max(which(abs(data$f[idx_left] - h_M/2) <= thresh))]
+      w_M.i2 <- idx_right[min(which(abs(data$f[idx_right] - h_M/2) <= thresh))]
       w_M <- data$t[w_M.i2] - data$t[w_M.i]
       s_M <- w_M/sqrt(8*log(2))
     }
@@ -1054,7 +1024,7 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
     col_name <- base_name_parts[2]
     flow <- as.numeric(str_replace(base_name_parts[3], "^(\\d)(\\d+)$", "\\1.\\2"))
     Temp <- as.numeric(base_name_parts[4]) + 273.15
-    title <- paste(paste(comp_name, col_name, flow, Temp - 273.15, sep = ", "), "(comp, col, flow mL/min, °C)")
+    title <- paste(paste(comp_name, col_name, flow, Temp - 273.15, sep = ", "), "(comp, col, flow ml/min, °C)")
     
     # read chromatograghy files
     encoding <- readr::guess_encoding(file)$encoding
@@ -1161,7 +1131,7 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
   summary_df <- summary_df %>%
     group_by(comp_name, col_name, Temp) %>%
     group_modify(~ {
-      valid_data <- .x %>% filter(!is.na(a) & !is.na(b) & !is.na(t_M))
+      valid_data <- .x %>% filter(!is.na(a) & !is.na(b) & !is.na(t_A))
       f_intercept <- NA_real_
       f_slope <- NA_real_
       f_intercept_se <- NA_real_
@@ -1178,21 +1148,21 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
       EP_slope_se <- NA_real_
       EP_r2 <- NA_real_
       if (nrow(valid_data) >= 2) {
-        f_model <- lm(a ~ I(60*(n_A*tau_A + t_M)), data = valid_data)
+        f_model <- lm(a ~ I(60*t_A), data = valid_data)
         f_tidy_model <- tidy(f_model)
         f_glance_model <- glance(f_model)
         f_intercept <- f_tidy_model$estimate[f_tidy_model$term == "(Intercept)"]
-        f_slope <- f_tidy_model$estimate[f_tidy_model$term == "I(60 * (n_A * tau_A + t_M))"]
+        f_slope <- f_tidy_model$estimate[f_tidy_model$term == "I(60 * t_A)"]
         f_intercept_se <- f_tidy_model$std.error[f_tidy_model$term == "(Intercept)"]
-        f_slope_se <- f_tidy_model$std.error[f_tidy_model$term == "I(60 * (n_A * tau_A + t_M))"]
+        f_slope_se <- f_tidy_model$std.error[f_tidy_model$term == "I(60 * t_A)"]
         f_r2 <- f_glance_model$r.squared
-        r_model <- lm(b ~ I(60*(n_A*tau_A + t_M)), data = valid_data)
+        r_model <- lm(b ~ I(60*t_A), data = valid_data)
         r_tidy_model <- tidy(r_model)
         r_glance_model <- glance(r_model)
         r_intercept <- r_tidy_model$estimate[r_tidy_model$term == "(Intercept)"]
-        r_slope <- r_tidy_model$estimate[r_tidy_model$term == "I(60 * (n_A * tau_A + t_M))"]
+        r_slope <- r_tidy_model$estimate[r_tidy_model$term == "I(60 * t_A)"]
         r_intercept_se <- r_tidy_model$std.error[r_tidy_model$term == "(Intercept)"]
-        r_slope_se <- r_tidy_model$std.error[r_tidy_model$term == "I(60 * (n_A * tau_A + t_M))"]
+        r_slope_se <- r_tidy_model$std.error[r_tidy_model$term == "I(60 * t_A)"]
         r_r2 <- r_glance_model$r.squared
       }
       .x %>%
