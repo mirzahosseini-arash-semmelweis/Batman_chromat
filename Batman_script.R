@@ -224,7 +224,7 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
   if (!anyNA(t0peak)) {
     t_Mi <- t0peak$ti
     h_M <- t0peak$A
-    thresh <- max(abs(diff(data$A)))
+    thresh <- max(abs(diff(data$A[(t_Mi - nrow(data)/max(data$t)):(t_Mi + nrow(data)/max(data$t))])))
     idx_left <- 1:t_Mi
     idx_right <- t_Mi:nrow(data)
     w_M.i <- idx_left[max(which(abs(data$A[idx_left] - h_M/2) <= thresh))]
@@ -428,6 +428,7 @@ batch.eval.kue <- function(path, threshold = 0.3, minSNR = 10, minpeakdist = 1,
       if (!is.numeric(df[, 1])) {
         df <- read.csv(file, header = TRUE, sep = sep, dec = dec, fileEncoding = encoding)
       }
+      colnames(df) <- c("V1", "V2")
       # result table
       result <- fit.batch.kue(data = df, threshold, minSNR, minpeakdist,
                               peak_table, file, t0_given, microrev, A0)
@@ -881,7 +882,7 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
         t_M <- t0peak$t
         t_Mi <- t0peak$ti
         h_M <- t0peak$f
-        thresh <- max(abs(diff(data$f)))
+        thresh <- max(abs(diff(data$f[(t_Mi - nrow(data)/max(data$t)):(t_Mi + nrow(data)/max(data$t))])))
         idx_left <- 1:t_Mi
         idx_right <- t_Mi:nrow(data)
         w_M.i <- idx_left[max(which(abs(data$f[idx_left] - h_M/2) <= thresh))]
@@ -894,7 +895,7 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
       t_M <- t0peak$t
       t_Mi <- t0peak$ti
       h_M <- t0peak$f
-      thresh <- max(abs(diff(data$f)))
+      thresh <- max(abs(diff(data$f[(t_Mi - nrow(data)/max(data$t)):(t_Mi + nrow(data)/max(data$t))])))
       idx_left <- 1:t_Mi
       idx_right <- t_Mi:nrow(data)
       w_M.i <- idx_left[max(which(abs(data$f[idx_left] - h_M/2) <= thresh))]
@@ -1034,6 +1035,7 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
     if (!is.numeric(df[, 1])) {
       df <- read.csv(file, header = TRUE, sep = sep, dec = dec, fileEncoding = encoding)
     }
+    colnames(df) <- c("V1", "V2")
     
     tryCatch({
       # preprocess chromatography data
