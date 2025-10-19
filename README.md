@@ -31,3 +31,34 @@ The workflow implements both the **unified equation** and a **stochastic model**
 - Chromatograms should be provided as individual .CSV files, each containing two columns: time and intensity, and placed together in a designated folder
 - If your chromatograms are in another format, they can be converted to .CSV using the [`chromConverter`](https://cran.r-project.org/web/packages/chromConverter/index.html) package
 - For multichannel chromatograms, the user must select the **optimal detector signal** prior to conversion
+
+---
+
+## Tips on Use
+
+* Place all chromatogram files (`.CSV`, containing **two columns: time, intensity**) into a single folder.
+* Run **`plot.runs()`** to visually inspect the chromatograms and verify signal quality.
+* Execute **`batch.eval.kue()`** with default parameters to perform automated unified equation fitting, and inspect the generated plots for consistency.
+* If some peaks are not detected or misidentified:
+  * Adjust **`threshold`** (broader peaks often require a lower threshold).
+  * Modify **`minSNR`** so that even the lowest-SNR peak remains identifiable.
+  * In rare cases where peaks are very close, set **`minpeakdist = 0`**.
+* If peak identification still needs refinement, create a CSV file named **`peak_table.csv`** with the following columns:
+  ```
+  file_name, t_M, t_A, t_B
+  ```
+  (Use file names exactly as listed in the output `summary_data.csv`.)
+  Provided *t* values should correspond to the expected peak positions.
+* Re-run **`batch.eval.kue()`** with the argument **`peak_table = TRUE`** to use your manually verified peak positions. Adjust values in `peak_table.csv` if necessary until all runs are correctly identified.
+* For **coalesced (merged) peaks** that cannot be evaluated using the unified equation:
+  * Leave the columns **`t_A`** and **`t_B`** empty in `peak_table.csv`.
+  * This signals the algorithm to apply only the **stochastic model** to those runs.
+  * However, providing **`t_M`** (the void time) is still recommended for accurate stochastic evaluation.
+* If the **non-retained analyte** (used for determining the void time) is **not present in every run**, but measured separately:
+  * Include those values in **`peak_table.csv`**.
+  * Then, run **`batch.eval.kue()`** with **`t0_given = TRUE`**.
+* Finally, perform the **stochastic model fitting** by running:
+
+  ```r
+  batch.eval.stoch()
+  ```
