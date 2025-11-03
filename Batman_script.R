@@ -347,7 +347,8 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
                  K = K,
                  N = N,
                  kue_f = kue_f,
-                 kue_r = kue_r)
+                 kue_r = kue_r,
+                 A_bc = data$A)
   return(result)
 }
 
@@ -432,6 +433,8 @@ batch.eval.kue <- function(path, threshold = 0.3, minSNR = 10, minpeakdist = 1,
       # result table
       result <- fit.batch.kue(data = df, threshold, minSNR, minpeakdist,
                               peak_table, file, t0_given, microrev, A0)
+      df$V2 <- result$A_bc
+      result <- result[-length(result)]
       Gue_f <- -log(result$kue_f/(1.380662e-23*Temp*0.5/6.626176e-34))*8.31441*Temp
       Gue_r <- -log(result$kue_r/(1.380662e-23*Temp*0.5/6.626176e-34))*8.31441*Temp
       result$Gue_f <- Gue_f
@@ -1237,3 +1240,4 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
   fwrite(summary_df, "summary_data.csv", sep = ",", dec = ".")
   message("Processing complete.")
 }
+
