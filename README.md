@@ -40,7 +40,7 @@ The workflow implements both the **unified equation** and a **stochastic model**
 * Run **`plot.runs()`** to visually inspect the chromatograms and verify signal quality.
 * Execute **`batch.eval.kue()`** with default parameters to perform automated unified equation fitting, and inspect the generated plots for consistency.
 * If some peaks are not detected or misidentified:
-  * Adjust **`threshold`** (broader peaks often require a lower threshold).
+  * Adjust **`threshold`** (broader peaks often require a lower threshold, maybe even **`0`**).
   * Modify **`minSNR`** so that even the lowest-SNR peak remains identifiable.
   * In rare cases where peaks are very close, set **`minpeakdist = 0`**.
 * If peak identification still needs refinement, create a CSV file named **`peak_table.csv`** with the following columns:
