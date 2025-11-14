@@ -9,7 +9,7 @@ The workflow implements both the **unified equation** and a **stochastic model**
 
 - Automated **peak picking** using the [`pracma`](https://cran.r-project.org/package=pracma) pattern recognition algorithm.
 - Support for both **unified equation** and **stochastic modeling** (using the [`DEoptim`](https://cran.r-project.org/web/packages/DEoptim/index.html) and [`minpack.lm`](https://cran.r-project.org/web/packages/minpack.lm/index.html) packages) of Batman peaks.
-- **Baseline correction** and spline/polynomial fitting.
+- **Baseline correction** with polynomial fitting.
 - Calculation of kinetic rate constants (`kue_f`, `kue_r`) and thermodynamic parameters (ΔH‡, ΔS‡, ΔG‡).
 - Visualization functions of chromatograms and model fits.
 - Fully **customizable R functions** for extending to new data sets.
