@@ -224,11 +224,11 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
   if (!anyNA(t0peak)) {
     t_Mi <- t0peak$ti
     h_M <- t0peak$A
-    thresh <- max(abs(diff(data$A[(t_Mi - nrow(data)/max(data$t)):(t_Mi + nrow(data)/max(data$t))])))
-    idx_left <- 1:t_Mi
-    idx_right <- t_Mi:nrow(data)
-    w_M.i <- idx_left[max(which(abs(data$A[idx_left] - h_M/2) <= thresh))]
-    w_M.i2 <- idx_right[min(which(abs(data$A[idx_right] - h_M/2) <= thresh))]
+    cutoff_idx <- max(10, round(0.5*nrow(data)/max(data$t))) # 0.5 min with security minimum
+    idx_left <- (t_Mi - cutoff_idx):t_Mi
+    idx_right <- t_Mi:(t_Mi + cutoff_idx)
+    w_M.i <- which.min(abs(data$A[idx_left] - h_M/2)) + t_Mi - cutoff_idx - 1
+    w_M.i2 <- which.min(abs(data$A[idx_right] - h_M/2)) + t_Mi - 1
     w_M <- data$t[w_M.i2] - data$t[w_M.i]
     s_M <- w_M/sqrt(8*log(2))
   } else {
@@ -252,7 +252,23 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
   idx_leftA <- 1:t_Ai
   idx_rightA <- t_Ai:nrow(data)
   w_A.i <- idx_leftA[max(which(abs(data$A[idx_leftA] - h_A/2) <= thresh))]
+  if (data$A[w_A.i] > h_A/2) {
+    while(data$A[w_A.i] > h_A/2) {w_A.i <- w_A.i - 1}
+    w_A.i <- ifelse(abs(data$A[w_A.i] - h_A/2) > abs(data$A[w_A.i + 1] - h_A/2), w_A.i + 1, w_A.i)
+  } else {
+    while(data$A[w_A.i] < h_A/2) {w_A.i <- w_A.i + 1}
+    w_A.i <- ifelse(abs(data$A[w_A.i] - h_A/2) > abs(data$A[w_A.i - 1] - h_A/2), w_A.i - 1, w_A.i)
+  }
   w_A.i2 <- idx_rightA[min(which(abs(data$A[idx_rightA] - h_A/2) <= thresh))]
+  if (h_mid < h_A/2) {
+    if (data$A[w_A.i2] > h_A/2) {
+      while(data$A[w_A.i2] > h_A/2) {w_A.i2 <- w_A.i2 + 1}
+      w_A.i2 <- ifelse(abs(data$A[w_A.i2] - h_A/2) > abs(data$A[w_A.i2 - 1] - h_A/2), w_A.i2 - 1, w_A.i2)
+    } else {
+      while(data$A[w_A.i2] < h_A/2) {w_A.i2 <- w_A.i2 - 1}
+      w_A.i2 <- ifelse(abs(data$A[w_A.i2] - h_A/2) > abs(data$A[w_A.i2 + 1] - h_A/2), w_A.i2 + 1, w_A.i2)
+    }
+  }
   w_A <- ifelse(h_mid >= h_A/2, 2*abs(data$t[w_A.i] - t_A), data$t[w_A.i2] - data$t[w_A.i])
   w_As <- w_A*60
   w_A.1 <- data$t[w_A.i]
@@ -260,7 +276,23 @@ fit.batch.kue <- function(data, threshold = 0.3, minSNR = 10, minpeakdist = 1,
   idx_leftB <- 1:t_Bi
   idx_rightB <- t_Bi:nrow(data)
   w_B.i <- idx_leftB[max(which(abs(data$A[idx_leftB] - h_B/2) <= thresh))]
+  if (h_mid < h_B/2) {
+    if (data$A[w_B.i] > h_B/2) {
+      while(data$A[w_B.i] > h_B/2) {w_B.i <- w_B.i - 1}
+      w_B.i <- ifelse(abs(data$A[w_B.i] - h_B/2) > abs(data$A[w_B.i + 1] - h_B/2), w_B.i + 1, w_B.i)
+    } else {
+      while(data$A[w_B.i] < h_B/2) {w_B.i <- w_B.i + 1}
+      w_B.i <- ifelse(abs(data$A[w_B.i] - h_B/2) > abs(data$A[w_B.i - 1] - h_B/2), w_B.i - 1, w_B.i)
+    }
+  }
   w_B.i2 <- idx_rightB[min(which(abs(data$A[idx_rightB] - h_B/2) <= thresh))]
+  if (data$A[w_B.i2] > h_B/2) {
+    while(data$A[w_B.i2] > h_B/2) {w_B.i2 <- w_B.i2 + 1}
+    w_B.i2 <- ifelse(abs(data$A[w_B.i2] - h_B/2) > abs(data$A[w_B.i2 - 1] - h_B/2), w_B.i2 - 1, w_B.i2)
+  } else {
+    while(data$A[w_B.i2] < h_B/2) {w_B.i2 <- w_B.i2 - 1}
+    w_B.i2 <- ifelse(abs(data$A[w_B.i2] - h_B/2) > abs(data$A[w_B.i2 + 1] - h_B/2), w_B.i2 + 1, w_B.i2)
+  }
   w_B <- ifelse(h_mid >= h_B/2, 2*abs(data$t[w_B.i2] - t_B), data$t[w_B.i2] - data$t[w_B.i])
   w_Bs <- w_B*60
   w_B.2 <- data$t[w_B.i2]
@@ -756,6 +788,7 @@ preproc.Batman1 <- function(data, summary_df, i) {
     data$t <- data$t - t_M
     data <- data %>% filter(t > 0)
   } else {
+    if (s_M < 1e-3) {s_M <- 0.01} # sanity check
     tM_data <- subset(data, t > (t_M - 3*s_M) & t < (t_M + 3*s_M))
     tM.LM <- function(parms) {
       pred <- parms[4]*dexGAUS(tM_data$t, parms[1], exp(parms[2]), exp(parms[3]))
@@ -777,7 +810,7 @@ preproc.Batman1 <- function(data, summary_df, i) {
     fitval <- nls.lm(par = parms, fn = tM.LM)
     fit_parms <- fitval$par
     tM_pred <- fit_parms[4]*dexGAUS(data$t, fit_parms[1], exp(fit_parms[2]), exp(fit_parms[3]))
-    deconv_A <- Mod(ifft(fft(data$f) - fft(tM_pred)))
+    deconv_A <- data$f - tM_pred
     deconv_t <- data$t - t_M
     data <- data.frame(t = deconv_t, f = deconv_A)
     data <- data %>% filter(t > 0)
@@ -820,33 +853,63 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
     filter(comp_name == summary_df$comp_name[i],
            col_name == summary_df$col_name[i],
            Temp == summary_df$Temp[i])
-  if(sum(!is.na(group_data$t_A)) < 1) {stop("No data available with different flow rates to extrapolate n and tau.")}
-  group_data <- group_data %>% mutate(
-    tR_A = t_A - t_M,
-    tR_B = t_B - t_M,
-    sd_A = w_A/sqrt(8*log(2)),
-    sd_B = w_B/sqrt(8*log(2)),
-    var_A = (sd_A)^2,
-    var_B = (sd_B)^2,
-    tau_A = (var_A/tR_A)/2,
-    tau_B = (var_B/tR_B)/2,
-    n_A = tR_A/tau_A,
-    n_B = tR_B/tau_B
-  )
-  
-  # extrapolating characteristic function parameters
-  model_n_A <- lm(n ~ flow, data = data.frame(n = group_data$n_A, flow = group_data$flow))
-  n_A <- predict(model_n_A, newdata = data.frame(flow = summary_df$flow[i]))
-  if (sum(!is.na(group_data$t_A)) == 1) {
-    n_A <- summary_df$flow[i]*na.omit(group_data$n_A)[[1]]/na.omit(group_data$flow)[[1]]
+  if (sum(!is.na(group_data$t_A)) > 0) {
+    group_data <- group_data %>% mutate(
+      tR_A = t_A - t_M,
+      tR_B = t_B - t_M,
+      sd_A = w_A/sqrt(8*log(2)),
+      sd_B = w_B/sqrt(8*log(2)),
+      var_A = (sd_A)^2,
+      var_B = (sd_B)^2,
+      tau_A = (var_A/tR_A)/2,
+      tau_B = (var_B/tR_B)/2,
+      n_A = tR_A/tau_A,
+      n_B = tR_B/tau_B
+    )
+    model_n_A <- lm(n ~ flow, data = data.frame(n = group_data$n_A, flow = group_data$flow))
+    n_A <- predict(model_n_A, newdata = data.frame(flow = summary_df$flow[i]))
+    if (sum(!is.na(group_data$t_A)) == 1) {
+      n_A <- summary_df$flow[i]*na.omit(group_data$n_A)[[1]]/na.omit(group_data$flow)[[1]]
+    }
+    model_n_B <- lm(n ~ flow, data = data.frame(n = group_data$n_B, flow = group_data$flow))
+    n_B <- predict(model_n_B, newdata = data.frame(flow = summary_df$flow[i]))
+    if (sum(!is.na(group_data$t_A)) == 1) {
+      n_B <- summary_df$flow[i]*na.omit(group_data$n_B)[[1]]/na.omit(group_data$flow)[[1]]
+    }
+    tau_A <- mean(group_data$tau_A, na.rm = TRUE)
+    tau_B <- mean(group_data$tau_B, na.rm = TRUE)
+  } else {
+    lower_temps <- summary_df %>%
+      filter(comp_name == summary_df$comp_name[i],
+             col_name == summary_df$col_name[i],
+             Temp < summary_df$Temp[i],
+             !is.na(t_A))
+    if (nrow(lower_temps) == 0) {stop("No data available with different flow rates, and no lower temperature data available for extrapolation.")}
+    nearest_lower_temp <- max(lower_temps$Temp, na.rm = TRUE)
+    group_data <- summary_df %>%
+      filter(comp_name == summary_df$comp_name[i],
+             col_name == summary_df$col_name[i],
+             Temp == nearest_lower_temp)
+    calc_vals <- group_data %>%
+      mutate(
+        tau_A = (t_A - t_M)/2*(w_A/sqrt(8*log(2)))^2,
+        tau_B = (t_B - t_M)/2*(w_B/sqrt(8*log(2)))^2,
+        n_A = (t_A - t_M)/tau_A,
+        n_B = (t_B - t_M)/tau_B
+      ) %>%
+      select(tau_A, tau_B, n_A, n_B)
+    mean_vals <- calc_vals %>%
+      summarize(
+        mean_n_A = mean(n_A, na.rm = TRUE),
+        mean_n_B = mean(n_B, na.rm = TRUE),
+        mean_tau_A = mean(tau_A, na.rm = TRUE),
+        mean_tau_B = mean(tau_B, na.rm = TRUE)
+      )
+    n_A <- mean_vals$mean_n_A
+    n_B <- mean_vals$mean_n_B
+    tau_A <- mean_vals$mean_tau_A
+    tau_B <- mean_vals$mean_tau_B
   }
-  model_n_B <- lm(n ~ flow, data = data.frame(n = group_data$n_B, flow = group_data$flow))
-  n_B <- predict(model_n_B, newdata = data.frame(flow = summary_df$flow[i]))
-  if (sum(!is.na(group_data$t_A)) == 1) {
-    n_B <- summary_df$flow[i]*na.omit(group_data$n_B)[[1]]/na.omit(group_data$flow)[[1]]
-  }
-  tau_A <- mean(group_data$tau_A, na.rm = TRUE)
-  tau_B <- mean(group_data$tau_B, na.rm = TRUE)
   
   # baseline correction
   colnames(data) <- c("t", "f")
@@ -885,11 +948,11 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
         t_M <- t0peak$t
         t_Mi <- t0peak$ti
         h_M <- t0peak$f
-        thresh <- max(abs(diff(data$f[(t_Mi - nrow(data)/max(data$t)):(t_Mi + nrow(data)/max(data$t))])))
-        idx_left <- 1:t_Mi
-        idx_right <- t_Mi:nrow(data)
-        w_M.i <- idx_left[max(which(abs(data$f[idx_left] - h_M/2) <= thresh))]
-        w_M.i2 <- idx_right[min(which(abs(data$f[idx_right] - h_M/2) <= thresh))]
+        cutoff_idx <- max(10, round(0.5*nrow(data)/max(data$t))) # 0.5 min with security minimum
+        idx_left <- (t_Mi - cutoff_idx):t_Mi
+        idx_right <- t_Mi:(t_Mi + cutoff_idx)
+        w_M.i <- which.min(abs(data$f[idx_left] - h_M/2)) + t_Mi - cutoff_idx - 1
+        w_M.i2 <- which.min(abs(data$f[idx_right] - h_M/2)) + t_Mi - 1
         w_M <- data$t[w_M.i2] - data$t[w_M.i]
         s_M <- w_M/sqrt(8*log(2))
       }
@@ -898,25 +961,34 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
       t_M <- t0peak$t
       t_Mi <- t0peak$ti
       h_M <- t0peak$f
-      thresh <- max(abs(diff(data$f[(t_Mi - nrow(data)/max(data$t)):(t_Mi + nrow(data)/max(data$t))])))
-      idx_left <- 1:t_Mi
-      idx_right <- t_Mi:nrow(data)
-      w_M.i <- idx_left[max(which(abs(data$f[idx_left] - h_M/2) <= thresh))]
-      w_M.i2 <- idx_right[min(which(abs(data$f[idx_right] - h_M/2) <= thresh))]
+      cutoff_idx <- max(10, round(0.5*nrow(data)/max(data$t))) # 0.5 min with security minimum
+      idx_left <- (t_Mi - cutoff_idx):t_Mi
+      idx_right <- t_Mi:(t_Mi + cutoff_idx)
+      w_M.i <- which.min(abs(data$f[idx_left] - h_M/2)) + t_Mi - cutoff_idx - 1
+      w_M.i2 <- which.min(abs(data$f[idx_right] - h_M/2)) + t_Mi - 1
       w_M <- data$t[w_M.i2] - data$t[w_M.i]
       s_M <- w_M/sqrt(8*log(2))
     }
   }
   
-  # checking n and tau start values
-  if (abs(n_A*tau_A - peaks$t[which.max(peaks$f)] + t_M) > 0.5) {n_A <- (peaks$t[which.max(peaks$f)] - t_M)/tau_A}
-  if (abs(n_B*tau_B - peaks$t[which.max(peaks$f)] + t_M) > 0.5) {n_B <- (peaks$t[which.max(peaks$f)] - t_M)/tau_B}
+  # sanity check n and tau start values
+  if (!exists("tau_A") || is.na(tau_A) || tau_A < 1e-6) {tau_A <- 1e-5}
+  if (!exists("tau_B") || is.na(tau_B) || tau_B < 1e-6) {tau_B <- 1e-5}
+  if (!exists("n_A") || is.na(n_A) || n_A == 0) {n_A <- 1e2}
+  if (!exists("n_B") || is.na(n_B) || n_B == 0) {n_B <- 1e2}
+  if (abs(n_A*tau_A - peaks$t[which.max(peaks$f)] + t_M) > 0.5) {
+    n_A <- (peaks$t[which.max(peaks$f)] - t_M)/tau_A
+  }
+  if (abs(n_B*tau_B - peaks$t[which.max(peaks$f)] + t_M) > 0.5) {
+    n_B <- (peaks$t[which.max(peaks$f)] - t_M)/tau_B
+  }
   
   # deconvolute chromatography data from dead time signal
   if (is.na(s_M)) {
     data$t <- data$t - t_M
     data <- data %>% filter(t > 0)
   } else {
+    if (s_M < 1e-3) {s_M <- 0.01} # sanity check
     tM_data <- subset(data, t > (t_M - 3*s_M) & t < (t_M + 3*s_M))
     tM.LM <- function(parms) {
       pred <- parms[4]*dexGAUS(tM_data$t, parms[1], exp(parms[2]), exp(parms[3]))
@@ -938,7 +1010,7 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
     fitval <- nls.lm(par = parms, fn = tM.LM)
     fit_parms <- fitval$par
     tM_pred <- fit_parms[4]*dexGAUS(data$t, fit_parms[1], exp(fit_parms[2]), exp(fit_parms[3]))
-    deconv_A <- Mod(ifft(fft(data$f) - fft(tM_pred)))
+    deconv_A <- data$f - tM_pred
     deconv_t <- data$t - t_M
     data <- data.frame(t = deconv_t, f = deconv_A)
     data <- data %>% filter(t > 0)
@@ -955,7 +1027,7 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
               n_A = n_A, n_B = n_B, tau_A = tau_A, tau_B = tau_B))
 }
 
-batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
+batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, max_conv = 10) {
   # Description
   # This function performs batch evaluation of the stochastic model on chromatography
   # files provided in .csv format if unified equation modeling has been performed.
@@ -1004,8 +1076,11 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
   }, error = function(e) {
     stop("The file 'summary_data.csv' was not found. Perform unified equation modeling first.")
   })
+  summary_df <- summary_df[, lapply(.SD, function(x) {
+    if (is.logical(x)) as.numeric(x) else x
+  })]
   summary_df <- summary_df %>%
-    arrange(desc(flow))
+    arrange(Temp, desc(flow))
   log_df <- fread("summary_log.txt", na.strings = "")
   summary_df$n_A <- as.numeric(NA)
   summary_df$n_B <- as.numeric(NA)
@@ -1044,17 +1119,11 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
       # preprocess chromatography data
       if (!is.na(summary_df$t_A[i])) {
         preproc_data <- preproc.Batman1(df, summary_df, i)
+        overwrite_t <- FALSE
       } else {
         preproc_data <- preproc.Batman2(df, summary_df, i, threshold, minSNR)
         summary_df$t_M[i] <- preproc_data$t_M
-        summary_df$t_A[i] <- min(preproc_data$n_A*preproc_data$tau_A, preproc_data$n_B*preproc_data$tau_B) +
-          summary_df$t_M[i]
-        summary_df$t_B[i] <- max(preproc_data$n_A*preproc_data$tau_A, preproc_data$n_B*preproc_data$tau_B) +
-          summary_df$t_M[i]
-        summary_df$w_A[i] <- ifelse(summary_df$t_A[i] < summary_df$t_B[i], sqrt(16*log(2)*preproc_data$n_A*preproc_data$tau_A^2),
-                                    sqrt(16*log(2)*preproc_data$n_B*preproc_data$tau_B^2))
-        summary_df$w_B[i] <- ifelse(summary_df$t_A[i] > summary_df$t_B[i], sqrt(16*log(2)*preproc_data$n_A*preproc_data$tau_A^2),
-                                    sqrt(16*log(2)*preproc_data$n_B*preproc_data$tau_B^2))
+        overwrite_t <- TRUE
       }
       
       #required optim functions
@@ -1086,7 +1155,19 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
       lower <- c(preproc_data$n_A/2, preproc_data$n_B/2,
                  preproc_data$tau_A/2, preproc_data$tau_B/2, 0)
       upper <- c(2*preproc_data$n_A, 2*preproc_data$n_B,
-                 2*preproc_data$tau_A, 2*preproc_data$tau_B, 6)
+                 2*preproc_data$tau_A, 2*preproc_data$tau_B, max_conv)
+      for (start_i in 1:2) {
+        if (lower[start_i] > upper[start_i]) {
+          lower[start_i] <- 0
+          upper[start_i] <- 1e4
+        }
+      }
+      for (start_i in 3:4) {
+        if (lower[start_i] > upper[start_i]) {
+          lower[start_i] <- 0
+          upper[start_i] <- 1e-1
+        }
+      }
       
       DEoptim_control <- DEoptim.control(itermax = 200,
                                          trace = TRUE,
@@ -1096,6 +1177,7 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
       
       # Levenberg-Marquadt algorithm with warm start
       parms <- c(DEoptim_res$optim$bestmem, DEoptim_res$optim$bestmem[5])
+      names(parms) <- NULL
       fitval <- nls.lm(par = parms, fn = Batman.LM, control = nls.lm.control(maxiter = 100))
       fit_parms <- fitval$par
       pred <- Batman(preproc_data$np, preproc_data$t_run,
@@ -1110,6 +1192,18 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
       summary_df$tau_B[i] <- fit_parms[4]
       summary_df$a[i] <- fit_parms[5]
       summary_df$b[i] <- fit_parms[6]
+      if (overwrite_t) {
+        summary_df$t_A[i] <- min(summary_df$n_A[i]*summary_df$tau_A[i],
+                                 summary_df$n_B[i]*summary_df$tau_B[i]) + summary_df$t_M[i]
+        summary_df$t_B[i] <- max(summary_df$n_A[i]*summary_df$tau_A[i],
+                                 summary_df$n_B[i]*summary_df$tau_B[i]) + summary_df$t_M[i]
+        summary_df$w_A[i] <- ifelse(summary_df$t_A[i] < summary_df$t_B[i],
+                                    sqrt(16*log(2)*summary_df$n_A[i]*summary_df$tau_A[i]^2),
+                                    sqrt(16*log(2)*summary_df$n_B[i]*summary_df$tau_B[i]^2))
+        summary_df$w_B[i] <- ifelse(summary_df$t_A[i] > summary_df$t_B[i],
+                                    sqrt(16*log(2)*summary_df$n_A[i]*summary_df$tau_A[i]^2),
+                                    sqrt(16*log(2)*summary_df$n_B[i]*summary_df$tau_B[i]^2))
+      }
       
       #export plots
       plot <- ggplot() +
@@ -1240,4 +1334,3 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10) {
   fwrite(summary_df, "summary_data.csv", sep = ",", dec = ".")
   message("Processing complete.")
 }
-
