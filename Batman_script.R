@@ -1227,11 +1227,11 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
     })
   }
   
-  #add linreg a, b ~ t_A
+  #add linreg a, b ~ t_A, t_B
   summary_df <- summary_df %>%
     group_by(comp_name, col_name, Temp) %>%
     group_modify(~ {
-      valid_data <- .x %>% filter(!is.na(a) & !is.na(b) & !is.na(t_A))
+      valid_data <- .x %>% filter(!is.na(a) & !is.na(b) & !is.na(t_A) & !is.na(t_B))
       f_intercept <- NA_real_
       f_slope <- NA_real_
       f_intercept_se <- NA_real_
@@ -1256,13 +1256,13 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
         f_intercept_se <- f_tidy_model$std.error[f_tidy_model$term == "(Intercept)"]
         f_slope_se <- f_tidy_model$std.error[f_tidy_model$term == "I(60 * t_A)"]
         f_r2 <- f_glance_model$r.squared
-        r_model <- lm(b ~ I(60*t_A), data = valid_data)
+        r_model <- lm(b ~ I(60*t_B), data = valid_data)
         r_tidy_model <- tidy(r_model)
         r_glance_model <- glance(r_model)
         r_intercept <- r_tidy_model$estimate[r_tidy_model$term == "(Intercept)"]
-        r_slope <- r_tidy_model$estimate[r_tidy_model$term == "I(60 * t_A)"]
+        r_slope <- r_tidy_model$estimate[r_tidy_model$term == "I(60 * t_B)"]
         r_intercept_se <- r_tidy_model$std.error[r_tidy_model$term == "(Intercept)"]
-        r_slope_se <- r_tidy_model$std.error[r_tidy_model$term == "I(60 * t_A)"]
+        r_slope_se <- r_tidy_model$std.error[r_tidy_model$term == "I(60 * t_B)"]
         r_r2 <- r_glance_model$r.squared
       }
       .x %>%
@@ -1335,4 +1335,5 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
   fwrite(summary_df, "summary_data.csv", sep = ",", dec = ".")
   message("Processing complete.")
 }
+
 
