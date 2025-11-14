@@ -37,6 +37,7 @@ The workflow implements both the **unified equation** and a **stochastic model**
 ## Tips on Use
 
 * Place all chromatogram files (`.CSV`, containing **two columns: time, intensity**) into a single folder.
+* Name the .csv files with the following convention for the algorithm to fetch correct flow rate and temperature parameters: **`[compound]_[column]_[flow]_[temperature].csv`**
 * Run **`plot.runs()`** to visually inspect the chromatograms and verify signal quality.
 * Execute **`batch.eval.kue()`** with default parameters to perform automated unified equation fitting, and inspect the generated plots for consistency.
 * If some peaks are not detected or misidentified:
