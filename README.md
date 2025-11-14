@@ -55,8 +55,8 @@ The workflow implements both the **unified equation** and a **stochastic model**
   * Leave the columns **`t_A`** and **`t_B`** empty in `peak_table.csv`.
   * This signals the algorithm to apply only the **stochastic model** to those runs.
   * However, providing **`t_M`** (the void time) is still recommended for accurate stochastic evaluation.
-* If the **non-retained analyte** (used for determining the void time) is **not present in every run**, but measured separately:
-  * Include those values in **`peak_table.csv`**.
+* (Optional) If the **non-retained analyte** (used for determining the void time) is **not present in every run**, but measured separately:
+  * Provide these values in **`peak_table.csv`** as **`t_M`**.
   * Then, run **`batch.eval.kue()`** with **`t0_given = TRUE`**.
 * Finally, perform the **stochastic model fitting** by running:
 
