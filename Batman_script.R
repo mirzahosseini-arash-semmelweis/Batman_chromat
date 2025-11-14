@@ -1271,11 +1271,11 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
                kstoch_f_tA_intcpt = f_intercept,
                kstoch_f_tA_intcpt_se = f_intercept_se,
                kstoch_f_tA_r2 = f_r2,
-               kstoch_r_tA = r_slope,
-               kstoch_r_tA_se = r_slope_se,
-               kstoch_r_tA_intcpt = r_intercept,
-               kstoch_r_tA_intcpt_se = r_intercept_se,
-               kstoch_r_tA_r2 = r_r2)
+               kstoch_r_tB = r_slope,
+               kstoch_r_tB_se = r_slope_se,
+               kstoch_r_tB_intcpt = r_intercept,
+               kstoch_r_tB_intcpt_se = r_intercept_se,
+               kstoch_r_tB_r2 = r_r2)
     }) %>%
     ungroup()
   
@@ -1286,7 +1286,7 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
       valid_data <- .x %>% filter(!is.na(kstoch_f_tA) & !is.na(Temp)) %>%
         group_by(Temp) %>%
         summarise(mean_kstoch_f = mean(kstoch_f_tA, na.rm = TRUE),
-                  mean_kstoch_r = mean(kstoch_r_tA, na.rm = TRUE),
+                  mean_kstoch_r = mean(kstoch_r_tB, na.rm = TRUE),
                   .groups = "drop")
       EP_f_intercept <- NA_real_
       EP_f_slope <- NA_real_
@@ -1335,5 +1335,6 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
   fwrite(summary_df, "summary_data.csv", sep = ",", dec = ".")
   message("Processing complete.")
 }
+
 
 
