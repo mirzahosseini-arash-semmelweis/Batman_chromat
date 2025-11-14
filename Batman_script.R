@@ -1033,8 +1033,9 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
   # files provided in .csv format if unified equation modeling has been performed.
   
   # Arguments
-  # path    The path where the files are found.
-  # alpha   Fraction of the first eluted isomer in the injected sample. Default is 0.5.
+  # path      The path where the files are found.
+  # alpha     Fraction of the first eluted isomer in the injected sample. Default is 0.5.
+  # max_conv  The maximum number of interconversions during the run, passed on as a starting parameter to DE algorithm. Defaults to 10.
   # All other arguments have the same defaults and are passed to fit.batch.kue().
   
   # Value
@@ -1334,3 +1335,4 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
   fwrite(summary_df, "summary_data.csv", sep = ",", dec = ".")
   message("Processing complete.")
 }
+
