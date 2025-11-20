@@ -976,11 +976,12 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
   if (!exists("tau_B") || is.na(tau_B) || tau_B < 1e-6) {tau_B <- 1e-5}
   if (!exists("n_A") || is.na(n_A) || n_A == 0) {n_A <- 1e2}
   if (!exists("n_B") || is.na(n_B) || n_B == 0) {n_B <- 1e2}
-  if (abs(n_A*tau_A - peaks$t[which.max(peaks$f)] + t_M) > 0.5) {
-    n_A <- (peaks$t[which.max(peaks$f)] - t_M)/tau_A
+  colaesced_peak <- filter(peaks, t > t_M)$t[which.max(filter(peaks, t > t_M)$f)]
+  if (abs(n_A*tau_A - colaesced_peak + t_M) > 0.5) {
+    n_A <- (colaesced_peak - t_M)/tau_A
   }
-  if (abs(n_B*tau_B - peaks$t[which.max(peaks$f)] + t_M) > 0.5) {
-    n_B <- (peaks$t[which.max(peaks$f)] - t_M)/tau_B
+  if (abs(n_B*tau_B - colaesced_peak + t_M) > 0.5) {
+    n_B <- (colaesced_peak - t_M)/tau_B
   }
   
   # deconvolute chromatography data from dead time signal
@@ -1335,6 +1336,7 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
   fwrite(summary_df, "summary_data.csv", sep = ",", dec = ".")
   message("Processing complete.")
 }
+
 
 
 
