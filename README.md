@@ -38,7 +38,7 @@ The workflow implements both the **unified equation** and a **stochastic model**
 
 * Place all chromatogram files (`.CSV`, containing **two columns: time, intensity**) into a single folder.
 * Name the .csv files with the following convention for the algorithm to fetch correct flow rate and temperature parameters: **`[compound]_[column]_[flow]_[temperature].csv`**
-* Run **`plot.runs()`** to visually inspect the chromatograms and verify signal quality.
+* Run **`plot.runs()`** to visually inspect the chromatograms and verify signal quality. Note that the algorithm assumes that if void time peak is present, it is discernible (free from artefacts; required for deconvolution from chromatogram) and it has lower intensity than the Batman peak (required for automatic peak detection).
 * Execute **`batch.eval.kue()`** with default parameters to perform automated unified equation fitting, and inspect the generated plots for consistency.
 * If some peaks are not detected or misidentified:
   * Adjust **`threshold`** (broader peaks often require a lower threshold, maybe even **`0`**).
