@@ -63,3 +63,8 @@ The workflow implements both the **unified equation** and a **stochastic model**
   ```r
   batch.eval.stoch()
   ```
+
+## Script Versions
+
+* `Batman_script.R` contains code published in [Journal of Chromatography A](https://doi.org/10.1016/j.chroma.2025.466558), originally implemented unified equation and stochastic model fit with one-site model of chiral stationary phase
+* `Batman_v2_script.R` contains code with implementation of two-site model of chiral stationary phase in the stochastic model as well. By setting **`two_site = TRUE`** the algorithm will fit the extended model (otherwise defaults to one-site model), if nonselective/enantioselective site ratio in log scale is provided as dataframe for all *temperature × stationary phase* combinations present in the experiment (**`log_ratio`**).
