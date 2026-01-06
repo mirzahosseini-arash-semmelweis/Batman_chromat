@@ -566,14 +566,22 @@ batch.eval.kue <- function(path, threshold = 0.3, minSNR = 10, minpeakdist = 1,
   summary_df <- rbindlist(summary_rows, fill = TRUE)
   
   #add linreg Eyring-Polanyi
+  safe_lm <- function(formula, data) {
+    tryCatch(
+      lm(formula, data = data),
+      error = function(e) NULL
+    )
+  }
+  
   summary_df <- summary_df %>%
     group_by(comp_name, col_name) %>%
     group_modify(~ {
-      valid_data <- .x %>% filter(!is.na(kue_f) & !is.na(Temp)) %>%
+      valid_data <- .x %>% filter(is.finite(kue_f) & is.finite(Temp)) %>%
         group_by(Temp) %>%
         summarise(mean_kue_f = mean(kue_f, na.rm = TRUE),
                   mean_kue_r = mean(kue_r, na.rm = TRUE),
                   .groups = "drop")
+      
       EP_f_intercept <- NA_real_
       EP_f_slope <- NA_real_
       EP_f_intercept_se <- NA_real_
@@ -584,23 +592,31 @@ batch.eval.kue <- function(path, threshold = 0.3, minSNR = 10, minpeakdist = 1,
       EP_r_intercept_se <- NA_real_
       EP_r_slope_se <- NA_real_
       EP_r_r2 <- NA_real_
+      
       if (nrow(valid_data) >= 2) {
-        EP_f_model <- lm(I(log(mean_kue_f/Temp)) ~ I(1/Temp), data = valid_data)
-        EP_f_tidy_model <- tidy(EP_f_model)
-        EP_f_glance_model <- glance(EP_f_model)
-        EP_f_intercept <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "(Intercept)"]
-        EP_f_slope <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "I(1/Temp)"]
-        EP_f_intercept_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "(Intercept)"]
-        EP_f_slope_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "I(1/Temp)"]
-        EP_f_r2 <- EP_f_glance_model$r.squared
-        EP_r_model <- lm(I(log(mean_kue_r/Temp)) ~ I(1/Temp), data = valid_data)
-        EP_r_tidy_model <- tidy(EP_r_model)
-        EP_r_glance_model <- glance(EP_r_model)
-        EP_r_intercept <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "(Intercept)"]
-        EP_r_slope <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "I(1/Temp)"]
-        EP_r_intercept_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "(Intercept)"]
-        EP_r_slope_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "I(1/Temp)"]
-        EP_r_r2 <- EP_r_glance_model$r.squared
+        
+        EP_f_model <- safe_lm(I(log(mean_kue_f/Temp)) ~ I(1/Temp), data = valid_data)
+        EP_r_model <- safe_lm(I(log(mean_kue_r/Temp)) ~ I(1/Temp), data = valid_data)
+        
+        if (!is.null(EP_f_model)) {
+          EP_f_tidy_model <- tidy(EP_f_model)
+          EP_f_glance_model <- glance(EP_f_model)
+          EP_f_intercept <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "(Intercept)"]
+          EP_f_slope <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "I(1/Temp)"]
+          EP_f_intercept_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "(Intercept)"]
+          EP_f_slope_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "I(1/Temp)"]
+          EP_f_r2 <- EP_f_glance_model$r.squared
+        }
+        
+        if (!is.null(EP_r_model)) {
+          EP_r_tidy_model <- tidy(EP_r_model)
+          EP_r_glance_model <- glance(EP_r_model)
+          EP_r_intercept <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "(Intercept)"]
+          EP_r_slope <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "I(1/Temp)"]
+          EP_r_intercept_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "(Intercept)"]
+          EP_r_slope_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "I(1/Temp)"]
+          EP_r_r2 <- EP_r_glance_model$r.squared
+        }
       }
       .x %>%
         mutate(dHue_f = -EP_f_slope*8.314,
@@ -724,6 +740,7 @@ Batman <- function(np, t_run, n_A, n_B, tau_A, tau_B, a, b, alpha) {
   f_A_conv <- convolve(f_A, rev(P_A), type = "o")[tA.i:(tA.i + np)]
   f_B_conv <- convolve(f_B, rev(P_B), type = "o")[tB.i:(tB.i + np)]
   f_conv <- f_A_conv + f_B_conv
+  f_conv <- f_conv/sum(f_conv)
   
   # return result
   return(list(t = t, f_A = f_A, f_B = f_B, f = f,
@@ -828,6 +845,7 @@ Batman2 <- function(np, t_run,
   f_A_conv <- convolve(f_A, rev(P_A), type = "o")[tA.i:(tA.i + np)]
   f_B_conv <- convolve(f_B, rev(P_B), type = "o")[tB.i:(tB.i + np)]
   f_conv <- f_A_conv + f_B_conv
+  f_conv <- f_conv/sum(f_conv)
   
   # return result
   return(list(t = t, f_A = f_A, f_B = f_B, f = f,
@@ -869,7 +887,7 @@ preproc.Batman1 <- function(data, summary_df, i) {
   baseline_pred <- predict(fit, newdata = data, type = "response")
   data$f <- data$f - baseline_pred
   
-  # fetch peak parameters and calculate characteristic function parameters
+  # fetch peak parameters
   t_M <- summary_df$t_M[i]
   s_M <- summary_df$s_M[i]
   t_A <- summary_df$t_A[i]
@@ -887,12 +905,56 @@ preproc.Batman1 <- function(data, summary_df, i) {
   n_A <- tR_A/tau_A
   n_B <- tR_B/tau_B
   
-  # deconvolute chromatography data from dead time signal
+  fit_pred <- function(y, flow, flow_i, x = c("inv", "flow")) {
+    x <- match.arg(x)
+    
+    ok <- !is.na(y) & !is.na(flow)
+    y <- y[ok]
+    flow <- flow[ok]
+    
+    n <- length(y)
+    if (n == 0) return(NA_real_)
+    
+    if (n == 1) {
+      if (x == "inv") return(flow[[1]] * y[[1]] / flow_i)
+      if (x == "flow") return(flow_i * y[[1]] / flow[[1]])
+    }
+    
+    if (x == "inv") {
+      mod <- lm(y ~ I(1 / flow))
+      return(as.numeric(predict(mod, newdata = data.frame(flow = flow_i))))
+    } else {
+      mod <- lm(y ~ flow)
+      return(as.numeric(predict(mod, newdata = data.frame(flow = flow_i))))
+    }
+  }
+  
+  comp_i <- summary_df$comp_name[i]
+  col_i  <- summary_df$col_name[i]
+  temp_i <- summary_df$Temp[i]
+  flow_i <- summary_df$flow[i]
+  
+  group_data <- summary_df %>%
+    filter(comp_name == comp_i,
+           col_name  == col_i,
+           Temp      == temp_i)
+  
+  has_a <- sum(!is.na(group_data$a)) > 2
+  
+  if (has_a) {
+    a     <- fit_pred(group_data$a, group_data$flow, flow_i, x = "flow")
+    b     <- fit_pred(group_data$b, group_data$flow, flow_i, x = "flow")
+  } else {
+    a <- NA
+    b <- NA
+  }
+  
+  # deconvolute chromatography data from void time signal
   if (is.na(s_M)) {
     data$t <- data$t - t_M
     data <- data %>% filter(t > 0)
   } else {
-    if (s_M < 1e-3) {s_M <- 0.01} # sanity check
+    if (s_M < 1e-3 | s_M > 0.1) {s_M <- 0.01} # sanity check
     tM_data <- subset(data, t > (t_M - 3*s_M) & t < (t_M + 3*s_M))
     tM.LM <- function(parms) {
       pred <- parms[4]*dexGAUS(tM_data$t, parms[1], exp(parms[2]), exp(parms[3]))
@@ -928,7 +990,7 @@ preproc.Batman1 <- function(data, summary_df, i) {
   t_run <- max(data$t)
   
   return(list(t = data$t, f = data$f, np = np, t_run = t_run,
-              n_A = n_A, n_B = n_B, tau_A = tau_A, tau_B = tau_B))
+              n_A = n_A, n_B = n_B, tau_A = tau_A, tau_B = tau_B, a = a, b = b))
 }
 
 preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
@@ -952,67 +1014,87 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
   require(minpack.lm)
   require(gamlss.dist)
   
-  # grouping of data in summary_df with the same metadata
+  # helpers for extrapolating parameter search
+  pred_const_mean <- function(y) {
+    if (all(is.na(y))) return(NA_real_)
+    mean(y, na.rm = TRUE)
+  }
+  
+  pred_log_linear_invTemp <- function(y, Temp, Temp_i) {
+    ok <- !is.na(y) & !is.na(Temp)
+    y <- y[ok]; Temp <- Temp[ok]
+    
+    n <- length(y)
+    if (n == 0) return(NA_real_)
+    if (n == 1) return(as.numeric(y[[1]]))
+    
+    mod <- lm(log(y) ~ I(1 / Temp))
+    as.numeric(exp(predict(mod, newdata = data.frame(Temp = Temp_i))))
+  }
+  
+  fit_pred <- function(y, flow, flow_i, x = c("inv", "flow")) {
+    x <- match.arg(x)
+    
+    ok <- !is.na(y) & !is.na(flow)
+    y <- y[ok]
+    flow <- flow[ok]
+    
+    n <- length(y)
+    if (n == 0) return(NA_real_)
+    
+    if (n == 1) {
+      if (x == "inv") return(flow[[1]] * y[[1]] / flow_i)
+      if (x == "flow") return(flow_i * y[[1]] / flow[[1]])
+    }
+    
+    if (x == "inv") {
+      mod <- lm(y ~ I(1 / flow))
+      return(as.numeric(predict(mod, newdata = data.frame(flow = flow_i))))
+    } else {
+      mod <- lm(y ~ flow)
+      return(as.numeric(predict(mod, newdata = data.frame(flow = flow_i))))
+    }
+  }
+  
+  comp_i <- summary_df$comp_name[i]
+  col_i  <- summary_df$col_name[i]
+  temp_i <- summary_df$Temp[i]
+  flow_i <- summary_df$flow[i]
+  
   group_data <- summary_df %>%
-    filter(comp_name == summary_df$comp_name[i],
-           col_name == summary_df$col_name[i],
-           Temp == summary_df$Temp[i])
-  if (sum(!is.na(group_data$t_A)) > 0) {
-    group_data <- group_data %>% mutate(
-      tR_A = t_A - t_M,
-      tR_B = t_B - t_M,
-      sd_A = w_A/sqrt(8*log(2)),
-      sd_B = w_B/sqrt(8*log(2)),
-      var_A = (sd_A)^2,
-      var_B = (sd_B)^2,
-      tau_A = (var_A/tR_A)/2,
-      tau_B = (var_B/tR_B)/2,
-      n_A = tR_A/tau_A,
-      n_B = tR_B/tau_B
-    )
-    model_n_A <- lm(n ~ flow, data = data.frame(n = group_data$n_A, flow = group_data$flow))
-    n_A <- predict(model_n_A, newdata = data.frame(flow = summary_df$flow[i]))
-    if (sum(!is.na(group_data$t_A)) == 1) {
-      n_A <- summary_df$flow[i]*na.omit(group_data$n_A)[[1]]/na.omit(group_data$flow)[[1]]
-    }
-    model_n_B <- lm(n ~ flow, data = data.frame(n = group_data$n_B, flow = group_data$flow))
-    n_B <- predict(model_n_B, newdata = data.frame(flow = summary_df$flow[i]))
-    if (sum(!is.na(group_data$t_A)) == 1) {
-      n_B <- summary_df$flow[i]*na.omit(group_data$n_B)[[1]]/na.omit(group_data$flow)[[1]]
-    }
-    tau_A <- mean(group_data$tau_A, na.rm = TRUE)
-    tau_B <- mean(group_data$tau_B, na.rm = TRUE)
+    filter(comp_name == comp_i,
+           col_name  == col_i,
+           Temp      == temp_i)
+  
+  has_tA <- sum(!is.na(group_data$t_A)) > 0
+  
+  if (has_tA) {
+    # flow-based prediction at Temp_i
+    n_A   <- fit_pred(group_data$n_A,   group_data$flow, flow_i, x = "inv")
+    n_B   <- fit_pred(group_data$n_B,   group_data$flow, flow_i, x = "inv")
+    tau_A <- fit_pred(group_data$tau_A, group_data$flow, flow_i, x = "inv")
+    tau_B <- fit_pred(group_data$tau_B, group_data$flow, flow_i, x = "inv")
+    a     <- fit_pred(group_data$a,     group_data$flow, flow_i, x = "flow")
+    b     <- fit_pred(group_data$b,     group_data$flow, flow_i, x = "flow")
   } else {
+    # fallback: lower temps at same flow
     lower_temps <- summary_df %>%
-      filter(comp_name == summary_df$comp_name[i],
-             col_name == summary_df$col_name[i],
-             Temp < summary_df$Temp[i],
+      filter(comp_name == comp_i,
+             col_name  == col_i,
+             Temp      < temp_i,
+             flow      == flow_i,
              !is.na(t_A))
-    if (nrow(lower_temps) == 0) {stop("No data available with different flow rates, and no lower temperature data available for extrapolation.")}
-    nearest_lower_temp <- max(lower_temps$Temp, na.rm = TRUE)
-    group_data <- summary_df %>%
-      filter(comp_name == summary_df$comp_name[i],
-             col_name == summary_df$col_name[i],
-             Temp == nearest_lower_temp)
-    calc_vals <- group_data %>%
-      mutate(
-        tau_A = (t_A - t_M)/2*(w_A/sqrt(8*log(2)))^2,
-        tau_B = (t_B - t_M)/2*(w_B/sqrt(8*log(2)))^2,
-        n_A = (t_A - t_M)/tau_A,
-        n_B = (t_B - t_M)/tau_B
-      ) %>%
-      select(tau_A, tau_B, n_A, n_B)
-    mean_vals <- calc_vals %>%
-      summarize(
-        mean_n_A = mean(n_A, na.rm = TRUE),
-        mean_n_B = mean(n_B, na.rm = TRUE),
-        mean_tau_A = mean(tau_A, na.rm = TRUE),
-        mean_tau_B = mean(tau_B, na.rm = TRUE)
-      )
-    n_A <- mean_vals$mean_n_A
-    n_B <- mean_vals$mean_n_B
-    tau_A <- mean_vals$mean_tau_A
-    tau_B <- mean_vals$mean_tau_B
+    
+    if (nrow(lower_temps) == 0) {
+      stop("No data available with different flow rates, and no lower temperature data available for extrapolation.")
+    }
+    
+    n_A <- pred_const_mean(lower_temps$n_A)
+    n_B <- pred_const_mean(lower_temps$n_B)
+    tau_A <- pred_log_linear_invTemp(lower_temps$tau_A, lower_temps$Temp, temp_i)
+    tau_B <- pred_log_linear_invTemp(lower_temps$tau_B, lower_temps$Temp, temp_i)
+    a <- pred_log_linear_invTemp(lower_temps$a, lower_temps$Temp, temp_i)
+    b <- pred_log_linear_invTemp(lower_temps$b, lower_temps$Temp, temp_i)
   }
   
   # baseline correction
@@ -1029,7 +1111,7 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
   baseline_pred <- predict(fit, newdata = data, type = "response")
   data$f <- data$f - baseline_pred
   
-  # finding dead time
+  # finding void time
   t_M <- summary_df$t_M[i]
   s_M <- summary_df$s_M[i]
   peaks <- findpeaks(data$f,
@@ -1076,19 +1158,14 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
   }
   
   # sanity check n and tau start values
-  if (!exists("tau_A") || is.na(tau_A) || tau_A < 1e-6) {tau_A <- 1e-5}
-  if (!exists("tau_B") || is.na(tau_B) || tau_B < 1e-6) {tau_B <- 1e-5}
-  if (!exists("n_A") || is.na(n_A) || n_A == 0) {n_A <- 1e2}
-  if (!exists("n_B") || is.na(n_B) || n_B == 0) {n_B <- 1e2}
   coalesced_peak <- filter(peaks, t > t_M)$t[which.max(filter(peaks, t > t_M)$f)]
-  if (abs(n_A*tau_A - coalesced_peak + t_M) > 0.5) {
-    n_A <- (coalesced_peak - t_M)/tau_A
-  }
-  if (abs(n_B*tau_B - coalesced_peak + t_M) > 0.5) {
-    n_B <- (coalesced_peak - t_M)/tau_B
-  }
   
-  # deconvolute chromatography data from dead time signal
+  if (!exists("tau_A") || is.na(tau_A) || tau_A < 1e-6) {tau_A <- 1e-3}
+  if (!exists("tau_B") || is.na(tau_B) || tau_B < 1e-6) {tau_B <- 1e-3}
+  if (!exists("n_A") || is.na(n_A) || n_A <= 0) {n_A <- (coalesced_peak - t_M)/tau_A}
+  if (!exists("n_B") || is.na(n_B) || n_B <= 0) {n_B <- (coalesced_peak - t_M)/tau_B}
+  
+  # deconvolute chromatography data from void time signal
   if (is.na(s_M)) {
     data$t <- data$t - t_M
     data <- data %>% filter(t > 0)
@@ -1129,7 +1206,7 @@ preproc.Batman2 <- function(data, summary_df, i, threshold = 0.3, minSNR = 10) {
   t_run <- max(data$t)
   
   return(list(t = data$t, f = data$f, np = np, t_run = t_run, t_M = t_M,
-              n_A = n_A, n_B = n_B, tau_A = tau_A, tau_B = tau_B))
+              n_A = n_A, n_B = n_B, tau_A = tau_A, tau_B = tau_B, a = a, b = b))
 }
 
 batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, max_conv = 10,
@@ -1239,6 +1316,7 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
     summary_df$tau_A2 <- as.numeric(NA)
     summary_df$tau_B1 <- as.numeric(NA)
     summary_df$tau_B2 <- as.numeric(NA)
+    summary_df$log_site_ratio <- as.numeric(NA)
     summary_df$a <- as.numeric(NA)
     summary_df$b <- as.numeric(NA)
   }
@@ -1279,6 +1357,8 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
         summary_df$t_M[i] <- preproc_data$t_M
         overwrite_t <- TRUE
       }
+      if (!is.finite(preproc_data$a) || preproc_data$a < 0) {preproc_data$a <- max_conv}
+      if (!is.finite(preproc_data$b) || preproc_data$b < 0) {preproc_data$b <- max_conv}
       
       # fetching log_ratio
       log_ratio_i <- if (exists("log_ratio_df")) {
@@ -1312,10 +1392,19 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
           )$f_conv
         }
         
-        lower <- c(preproc_data$n_A/2, preproc_data$n_B/2,
-                   preproc_data$tau_A/2, preproc_data$tau_B/2, 0)
-        upper <- c(2*preproc_data$n_A, 2*preproc_data$n_B,
-                   2*preproc_data$tau_A, 2*preproc_data$tau_B, max_conv)
+        lower_DE <- c(preproc_data$n_A/2, preproc_data$n_B/2,
+                      preproc_data$tau_A/2, preproc_data$tau_B/2,
+                      0)
+        upper_DE <- c(2*preproc_data$n_A, 2*preproc_data$n_B,
+                      2*preproc_data$tau_A, 2*preproc_data$tau_B,
+                      2*preproc_data$a)
+        
+        lower_LM <- c(preproc_data$n_A/2, preproc_data$n_B/2,
+                      preproc_data$tau_A/2, preproc_data$tau_B/2,
+                      0, 0)
+        upper_LM <- c(2*preproc_data$n_A, 2*preproc_data$n_B,
+                      2*preproc_data$tau_A, 2*preproc_data$tau_B,
+                      2*preproc_data$a, 2*preproc_data$b)
         
       } else {
         # --- two-site model configuration ---
@@ -1325,8 +1414,8 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
             parms[1], parms[2],   # n_A, n_B
             parms[3], parms[4],   # tau_A1, tau_A2
             parms[5], parms[6],   # tau_B1, tau_B2
-            log_ratio_i,
-            parms[7], parms[7],   # a == b
+            parms[7],             # log_ratio
+            parms[8], parms[8],   # a == b
             alpha
           )$f_conv
         }
@@ -1337,27 +1426,54 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
             parms[1], parms[2],   # n_A, n_B
             parms[3], parms[4],   # tau_A1, tau_A2
             parms[5], parms[6],   # tau_B1, tau_B2
-            log_ratio_i,
-            parms[7], parms[8],   # a, b
+            parms[7],             # log_ratio
+            parms[8], parms[9],   # a, b
             alpha
           )$f_conv
         }
         
-        lower <- c(preproc_data$n_A/2, preproc_data$n_B/2,
-                   preproc_data$tau_A/100, preproc_data$tau_A,
-                   preproc_data$tau_B/100, preproc_data$tau_B,
-                   0)
-        upper <- c(2*preproc_data$n_A, 2*preproc_data$n_B,
-                   preproc_data$tau_A, 2*(1 + exp(log_ratio_i))*preproc_data$tau_A,
-                   preproc_data$tau_B, 2*(1 + exp(log_ratio_i))*preproc_data$tau_B,
-                   max_conv)
+        lower_DE <- c(preproc_data$n_A/2, preproc_data$n_B/2,
+                      preproc_data$tau_A/100, preproc_data$tau_A,
+                      preproc_data$tau_B/100, preproc_data$tau_B,
+                      log_ratio_i - 0.5, 0)
+        upper_DE <- c(2*preproc_data$n_A, 2*preproc_data$n_B,
+                      preproc_data$tau_A, 2*(1 + exp(log_ratio_i))*preproc_data$tau_A,
+                      preproc_data$tau_B, 2*(1 + exp(log_ratio_i))*preproc_data$tau_B,
+                      log_ratio_i + 0.5, 2*preproc_data$a)
+        
+        lower_LM <- c(preproc_data$n_A/2, preproc_data$n_B/2,
+                      preproc_data$tau_A/100, preproc_data$tau_A,
+                      preproc_data$tau_B/100, preproc_data$tau_B,
+                      log_ratio_i - 0.5, 0, 0)
+        upper_LM <- c(2*preproc_data$n_A, 2*preproc_data$n_B,
+                      preproc_data$tau_A, 2*(1 + exp(log_ratio_i))*preproc_data$tau_A,
+                      preproc_data$tau_B, 2*(1 + exp(log_ratio_i))*preproc_data$tau_B,
+                      log_ratio_i + 0.5, 2*preproc_data$a, 2*preproc_data$b)
       }
       
       # fix pathological bounds
-      for (start_value in 1:length(lower)) {
-        if (lower[start_value] > upper[start_value]) {
-          lower[start_value] <- 0
-          upper[start_value] <- if (start_value <= 2) 1e4 else 1e-1
+      for (start_value in 1:length(lower_DE)) {
+        if (lower_DE[start_value] > upper_DE[start_value]) {
+          lower_DE[start_value] <- 0
+          upper_DE[start_value] <- if (start_value <= 2) {
+            1e4
+          } else if (start_value == length(lower_DE)) {
+            max_conv
+          } else {
+            1e-1
+          }
+        }
+      }
+      for (start_value in 1:length(lower_LM)) {
+        if (lower_LM[start_value] > upper_LM[start_value]) {
+          lower_LM[start_value] <- 0
+          upper_LM[start_value] <- if (start_value <= 2) {
+            1e4
+          } else if (start_value >= length(lower_LM) - 1) {
+            max_conv
+          } else {
+            1e-1
+          }
         }
       }
       
@@ -1375,7 +1491,7 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
         parVar       = c("alpha", "Batman", "Batman2")
       )
       
-      DEoptim_res <- DEoptim(Batman.DEoptim, lower, upper, control = DEoptim_control)
+      DEoptim_res <- DEoptim(Batman.DEoptim, lower_DE, upper_DE, control = DEoptim_control)
       
       # Levenberg-Marquadt algorithm with warm start
       Batman.LM <- function(parms) {
@@ -1386,7 +1502,10 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
       
       parms <- c(DEoptim_res$optim$bestmem, rev(DEoptim_res$optim$bestmem)[1])
       names(parms) <- NULL
-      fitval <- nls.lm(par = parms, fn = Batman.LM,
+      fitval <- nls.lm(par = parms,
+                       fn = Batman.LM,
+                       lower = lower_LM,
+                       upper = upper_LM,
                        control = nls.lm.control(maxiter = 200))
       fit_parms <- fitval$par
       pred <- model_fun_LM(fit_parms)
@@ -1418,19 +1537,20 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
         summary_df$tau_A2[i] <- fit_parms[4]
         summary_df$tau_B1[i] <- fit_parms[5]
         summary_df$tau_B2[i] <- fit_parms[6]
-        summary_df$a[i] <- fit_parms[7]
-        summary_df$b[i] <- fit_parms[8]
+        summary_df$log_site_ratio <- fit_parms[7]
+        summary_df$a[i] <- fit_parms[8]
+        summary_df$b[i] <- fit_parms[9]
         if (overwrite_t) {
-          summary_df$t_A[i] <- min(summary_df$n_A[i]*((exp(log_ratio_i)/(1 + exp(log_ratio_i)))*summary_df$tau_A1[i] + (1/(1 + exp(log_ratio_i)))*summary_df$tau_A1[i]),
-                                   summary_df$n_B[i]*((exp(log_ratio_i)/(1 + exp(log_ratio_i)))*summary_df$tau_B1[i] + (1/(1 + exp(log_ratio_i)))*summary_df$tau_B1[i])) + summary_df$t_M[i]
-          summary_df$t_B[i] <- max(summary_df$n_A[i]*((exp(log_ratio_i)/(1 + exp(log_ratio_i)))*summary_df$tau_A1[i] + (1/(1 + exp(log_ratio_i)))*summary_df$tau_A1[i]),
-                                   summary_df$n_B[i]*((exp(log_ratio_i)/(1 + exp(log_ratio_i)))*summary_df$tau_B1[i] + (1/(1 + exp(log_ratio_i)))*summary_df$tau_B1[i])) + summary_df$t_M[i]
+          summary_df$t_A[i] <- min(summary_df$n_A[i]*((exp(fit_parms[7])/(1 + exp(fit_parms[7])))*summary_df$tau_A1[i] + (1/(1 + exp(fit_parms[7])))*summary_df$tau_A1[i]),
+                                   summary_df$n_B[i]*((exp(fit_parms[7])/(1 + exp(fit_parms[7])))*summary_df$tau_B1[i] + (1/(1 + exp(fit_parms[7])))*summary_df$tau_B1[i])) + summary_df$t_M[i]
+          summary_df$t_B[i] <- max(summary_df$n_A[i]*((exp(fit_parms[7])/(1 + exp(fit_parms[7])))*summary_df$tau_A1[i] + (1/(1 + exp(fit_parms[7])))*summary_df$tau_A1[i]),
+                                   summary_df$n_B[i]*((exp(fit_parms[7])/(1 + exp(fit_parms[7])))*summary_df$tau_B1[i] + (1/(1 + exp(fit_parms[7])))*summary_df$tau_B1[i])) + summary_df$t_M[i]
           summary_df$w_A[i] <- ifelse(summary_df$t_A[i] < summary_df$t_B[i],
-                                      sqrt(16*log(2)*summary_df$n_A[i]*((exp(log_ratio_i)/(1 + exp(log_ratio_i)))*summary_df$tau_A1[i] + (1/(1 + exp(log_ratio_i)))*summary_df$tau_A1[i])^2),
-                                      sqrt(16*log(2)*summary_df$n_B[i]*((exp(log_ratio_i)/(1 + exp(log_ratio_i)))*summary_df$tau_B1[i] + (1/(1 + exp(log_ratio_i)))*summary_df$tau_B1[i])^2))
+                                      sqrt(16*log(2)*summary_df$n_A[i]*((exp(fit_parms[7])/(1 + exp(fit_parms[7])))*summary_df$tau_A1[i] + (1/(1 + exp(fit_parms[7])))*summary_df$tau_A1[i])^2),
+                                      sqrt(16*log(2)*summary_df$n_B[i]*((exp(fit_parms[7])/(1 + exp(fit_parms[7])))*summary_df$tau_B1[i] + (1/(1 + exp(fit_parms[7])))*summary_df$tau_B1[i])^2))
           summary_df$w_B[i] <- ifelse(summary_df$t_A[i] > summary_df$t_B[i],
-                                      sqrt(16*log(2)*summary_df$n_A[i]*((exp(log_ratio_i)/(1 + exp(log_ratio_i)))*summary_df$tau_A1[i] + (1/(1 + exp(log_ratio_i)))*summary_df$tau_A1[i])^2),
-                                      sqrt(16*log(2)*summary_df$n_B[i]*((exp(log_ratio_i)/(1 + exp(log_ratio_i)))*summary_df$tau_B1[i] + (1/(1 + exp(log_ratio_i)))*summary_df$tau_B1[i])^2))
+                                      sqrt(16*log(2)*summary_df$n_A[i]*((exp(fit_parms[7])/(1 + exp(fit_parms[7])))*summary_df$tau_A1[i] + (1/(1 + exp(fit_parms[7])))*summary_df$tau_A1[i])^2),
+                                      sqrt(16*log(2)*summary_df$n_B[i]*((exp(fit_parms[7])/(1 + exp(fit_parms[7])))*summary_df$tau_B1[i] + (1/(1 + exp(fit_parms[7])))*summary_df$tau_B1[i])^2))
         }
       }
       
@@ -1459,10 +1579,21 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
   }
   
   #add linreg a, b ~ t_A, t_B
+  safe_lm <- function(formula, data) {
+    tryCatch(
+      lm(formula, data = data),
+      error = function(e) NULL
+    )
+  }
+  
   summary_df <- summary_df %>%
     group_by(comp_name, col_name, Temp) %>%
     group_modify(~ {
-      valid_data <- .x %>% filter(!is.na(a) & !is.na(b) & !is.na(t_A) & !is.na(t_B))
+      valid_data <- .x %>% filter(is.finite(a),
+                                  is.finite(b),
+                                  is.finite(t_A),
+                                  is.finite(t_B))
+      
       f_intercept <- NA_real_
       f_slope <- NA_real_
       f_intercept_se <- NA_real_
@@ -1478,23 +1609,31 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
       EP_intercept_se <- NA_real_
       EP_slope_se <- NA_real_
       EP_r2 <- NA_real_
+      
       if (nrow(valid_data) >= 2) {
-        f_model <- lm(a ~ I(60*t_A), data = valid_data)
-        f_tidy_model <- tidy(f_model)
-        f_glance_model <- glance(f_model)
-        f_intercept <- f_tidy_model$estimate[f_tidy_model$term == "(Intercept)"]
-        f_slope <- f_tidy_model$estimate[f_tidy_model$term == "I(60 * t_A)"]
-        f_intercept_se <- f_tidy_model$std.error[f_tidy_model$term == "(Intercept)"]
-        f_slope_se <- f_tidy_model$std.error[f_tidy_model$term == "I(60 * t_A)"]
-        f_r2 <- f_glance_model$r.squared
-        r_model <- lm(b ~ I(60*t_B), data = valid_data)
-        r_tidy_model <- tidy(r_model)
-        r_glance_model <- glance(r_model)
-        r_intercept <- r_tidy_model$estimate[r_tidy_model$term == "(Intercept)"]
-        r_slope <- r_tidy_model$estimate[r_tidy_model$term == "I(60 * t_B)"]
-        r_intercept_se <- r_tidy_model$std.error[r_tidy_model$term == "(Intercept)"]
-        r_slope_se <- r_tidy_model$std.error[r_tidy_model$term == "I(60 * t_B)"]
-        r_r2 <- r_glance_model$r.squared
+        
+        f_model <- safe_lm(a ~ I(60*t_A), data = valid_data)
+        r_model <- safe_lm(b ~ I(60*t_B), data = valid_data)
+        
+        if (!is.null(f_model)) {
+          f_tidy_model <- tidy(f_model)
+          f_glance_model <- glance(f_model)
+          f_intercept <- f_tidy_model$estimate[f_tidy_model$term == "(Intercept)"]
+          f_slope <- f_tidy_model$estimate[f_tidy_model$term == "I(60 * t_A)"]
+          f_intercept_se <- f_tidy_model$std.error[f_tidy_model$term == "(Intercept)"]
+          f_slope_se <- f_tidy_model$std.error[f_tidy_model$term == "I(60 * t_A)"]
+          f_r2 <- f_glance_model$r.squared
+        }
+        
+        if (!is.null(r_model)) {
+          r_tidy_model <- tidy(r_model)
+          r_glance_model <- glance(r_model)
+          r_intercept <- r_tidy_model$estimate[r_tidy_model$term == "(Intercept)"]
+          r_slope <- r_tidy_model$estimate[r_tidy_model$term == "I(60 * t_B)"]
+          r_intercept_se <- r_tidy_model$std.error[r_tidy_model$term == "(Intercept)"]
+          r_slope_se <- r_tidy_model$std.error[r_tidy_model$term == "I(60 * t_B)"]
+          r_r2 <- r_glance_model$r.squared
+        }
       }
       .x %>%
         mutate(kstoch_f_tA = f_slope,
@@ -1514,11 +1653,12 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
   summary_df <- summary_df %>%
     group_by(comp_name, col_name) %>%
     group_modify(~ {
-      valid_data <- .x %>% filter(!is.na(kstoch_f_tA) & !is.na(Temp)) %>%
+      valid_data <- .x %>% filter(is.finite(kstoch_f_tA) & is.finite(Temp)) %>%
         group_by(Temp) %>%
         summarise(mean_kstoch_f = mean(kstoch_f_tA, na.rm = TRUE),
                   mean_kstoch_r = mean(kstoch_r_tB, na.rm = TRUE),
                   .groups = "drop")
+      
       EP_f_intercept <- NA_real_
       EP_f_slope <- NA_real_
       EP_f_intercept_se <- NA_real_
@@ -1529,23 +1669,31 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
       EP_r_intercept_se <- NA_real_
       EP_r_slope_se <- NA_real_
       EP_r_r2 <- NA_real_
+      
       if (nrow(valid_data) >= 2) {
-        EP_f_model <- lm(I(log(mean_kstoch_f/Temp)) ~ I(1/Temp), data = valid_data)
-        EP_f_tidy_model <- tidy(EP_f_model)
-        EP_f_glance_model <- glance(EP_f_model)
-        EP_f_intercept <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "(Intercept)"]
-        EP_f_slope <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "I(1/Temp)"]
-        EP_f_intercept_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "(Intercept)"]
-        EP_f_slope_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "I(1/Temp)"]
-        EP_f_r2 <- EP_f_glance_model$r.squared
-        EP_r_model <- lm(I(log(mean_kstoch_r/Temp)) ~ I(1/Temp), data = valid_data)
-        EP_r_tidy_model <- tidy(EP_r_model)
-        EP_r_glance_model <- glance(EP_r_model)
-        EP_r_intercept <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "(Intercept)"]
-        EP_r_slope <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "I(1/Temp)"]
-        EP_r_intercept_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "(Intercept)"]
-        EP_r_slope_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "I(1/Temp)"]
-        EP_r_r2 <- EP_r_glance_model$r.squared
+        
+        EP_f_model <- safe_lm(I(log(mean_kstoch_f/Temp)) ~ I(1/Temp), data = valid_data)
+        EP_r_model <- safe_lm(I(log(mean_kstoch_r/Temp)) ~ I(1/Temp), data = valid_data)
+        
+        if (!is.null(EP_f_model)) {
+          EP_f_tidy_model <- tidy(EP_f_model)
+          EP_f_glance_model <- glance(EP_f_model)
+          EP_f_intercept <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "(Intercept)"]
+          EP_f_slope <- EP_f_tidy_model$estimate[EP_f_tidy_model$term == "I(1/Temp)"]
+          EP_f_intercept_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "(Intercept)"]
+          EP_f_slope_se <- EP_f_tidy_model$std.error[EP_f_tidy_model$term == "I(1/Temp)"]
+          EP_f_r2 <- EP_f_glance_model$r.squared
+        }
+        
+        if (!is.null(EP_r_model)) {
+          EP_r_tidy_model <- tidy(EP_r_model)
+          EP_r_glance_model <- glance(EP_r_model)
+          EP_r_intercept <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "(Intercept)"]
+          EP_r_slope <- EP_r_tidy_model$estimate[EP_r_tidy_model$term == "I(1/Temp)"]
+          EP_r_intercept_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "(Intercept)"]
+          EP_r_slope_se <- EP_r_tidy_model$std.error[EP_r_tidy_model$term == "I(1/Temp)"]
+          EP_r_r2 <- EP_r_glance_model$r.squared
+        }
       }
       .x %>%
         mutate(dH_f = -EP_f_slope*8.314,
@@ -1566,4 +1714,3 @@ batch.eval.stoch <- function(path, alpha = 0.5, threshold = 0.3, minSNR = 10, ma
   fwrite(summary_df, "summary_data.csv", sep = ",", dec = ".")
   message("Processing complete.")
 }
-
